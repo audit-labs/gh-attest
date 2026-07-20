@@ -89,7 +89,7 @@ export function renderCsv(rows: EvidenceRow[]): string {
 function csvEscape(value: string | number): string {
   const str = String(value);
   if (/[",\r\n]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`;
+    return `"${str.replaceAll('"', '""')}"`;
   }
   return str;
 }

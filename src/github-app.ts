@@ -9,7 +9,7 @@ const GITHUB_API = "https://api.github.com";
 // key they downloaded.
 function pkcs1PemToPkcs8Pem(pem: string): string {
   const base64 = pem.replace(/-----(BEGIN|END) RSA PRIVATE KEY-----/g, "").replace(/\s/g, "");
-  const pkcs1 = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  const pkcs1 = Uint8Array.from(atob(base64), (c) => c.codePointAt(0) ?? 0);
 
   const derLength = (length: number): number[] => {
     if (length < 0x80) return [length];
@@ -30,7 +30,7 @@ function pkcs1PemToPkcs8Pem(pem: string): string {
   ]);
 
   let binary = "";
-  for (const byte of pkcs8) binary += String.fromCharCode(byte);
+  for (const byte of pkcs8) binary += String.fromCodePoint(byte);
   return `-----BEGIN PRIVATE KEY-----\n${btoa(binary)}\n-----END PRIVATE KEY-----`;
 }
 

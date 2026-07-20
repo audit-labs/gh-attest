@@ -385,8 +385,8 @@ interface CleanupResult {
 // a no-op most of the time.
 async function runRetentionCleanup(env: Env): Promise<CleanupResult> {
   const now = Date.now();
-  const snapshotCutoff = new Date(now - SNAPSHOT_RETENTION_DAYS * 86400_000).toISOString();
-  const exportCutoff = new Date(now - EXPORT_RETENTION_DAYS * 86400_000).toISOString();
+  const snapshotCutoff = new Date(now - SNAPSHOT_RETENTION_DAYS * 86_400_000).toISOString();
+  const exportCutoff = new Date(now - EXPORT_RETENTION_DAYS * 86_400_000).toISOString();
 
   // Delete expired export R2 objects first (their keys live in the rows).
   const { results: expiredExports } = await env.DB.prepare(
@@ -567,7 +567,7 @@ async function handleAccessReview(request: Request, env: Env): Promise<Response>
   const since =
     requested && !Number.isNaN(requested.getTime())
       ? requested.toISOString()
-      : new Date(Date.now() - 30 * 86400_000).toISOString();
+      : new Date(Date.now() - 30 * 86_400_000).toISOString();
 
   const [diff, orgRow, installations] = await Promise.all([
     buildAccessDiff(env.DB, session.installationId, since),
