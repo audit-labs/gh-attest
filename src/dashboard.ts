@@ -47,7 +47,10 @@ export interface DashboardData {
   lastPolledAt: string | null;
 }
 
-function esc(value: unknown): string {
+// Deliberately narrower than `unknown`: an object reaching here would render
+// as "[object Object]" in an evidence table, which is worse than failing.
+// Keeping the parameter to primitives makes that a compile error instead.
+function esc(value: string | number | null | undefined): string {
   return String(value ?? "").replace(/[&<>"']/g, (c) => {
     switch (c) {
       case "&": return "&amp;";
