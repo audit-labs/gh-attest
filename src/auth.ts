@@ -94,11 +94,13 @@ export async function fetchUserInstallationIds(userAccessToken: string): Promise
 }
 
 function base64UrlEncode(input: string): string {
-  return btoa(input).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  // Padding is bounded to two characters, so the quantifier is too — an
+  // unbounded `=+$` backtracks super-linearly.
+  return btoa(input).replaceAll("+", "-").replaceAll("/", "_").replace(/={1,2}$/, "");
 }
 
 function base64UrlDecode(input: string): string {
-  const padded = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = input.replaceAll("-", "+").replaceAll("_", "/");
   const padding = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
   return atob(padded + padding);
 }
