@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gh-attest",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  // Storage is pinned to the EU jurisdiction so customer data stays in the
+  // EEA. Jurisdiction is immutable: moving it means recreating these
+  // resources and migrating the data.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gh-attest-db-eu",
+      "database_id": "70e8b4b2-4409-4f51-a9f6-badce76f5891",
+      "migrations_dir": "./migrations"
+    }
+  ],
+
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+
+  "r2_buckets": [
+    { "binding": "EXPORTS", "bucket_name": "gh-attest-exports-eu", "jurisdiction": "eu" }
+  ],
+
+  "queues": {
+    "producers": [
+      { "binding": "GENERATE_EXPORT", "queue": "generate-export" }
+    ],
+    "consumers": [
+      { "queue": "generate-export", "max_batch_size": 10, "max_batch_timeout": 30 }
+    ]
+  }
+}
