@@ -13,6 +13,8 @@ CSV and PDF evidence packages.
 
 Read-only — it never modifies your repositories, permissions, or membership.
 
+![GitHub Attest Dashboard](./preview.png "GitHub Attest Dashboard")
+
 ## What it collects
 
 | Signal | Evidence for |
