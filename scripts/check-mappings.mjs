@@ -42,26 +42,27 @@ function rowsFromMigrations() {
 }
 
 // --- 2. Human-readable copy: parse the doc's reference table. ---
-// Matches only rows of the reference table, which are shaped:
-//   | `resource` | status | SOC 2 | CC8.1 | positive | rationale |
-// The framework name in cell 3 and the bare posture word in cell 5 are what
-// distinguish these from the per-section tables (framework-first, prose posture)
-// and the glossary (bolded control in cell 1), so those are not matched.
+// Rows are parsed by splitting on "|" rather than a single big regex — that is
+// unambiguous and linear (no backtracking). A row counts only if it has the
+// reference table's shape: a backtick-wrapped resource, a known framework
+// label, and a bare posture word. That shape excludes the header/separator
+// rows, the per-section tables (framework-first, no backticked resource), and
+// the glossary (fewer columns) — so only reference-table data rows match.
 const FRAMEWORK_LABELS = { "SOC 2": "soc2", "ISO 27001": "iso27001" };
-// Cell captures use [^|] rather than . so a capture cannot run past a column
-// boundary — keeps the match linear (no catastrophic backtracking) and is why
-// splitting on "|" is unnecessary.
-const ROW_RE =
-  /^\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|\s*(SOC 2|ISO 27001)\s*\|\s*([\w.]+)\s*\|\s*(positive|negative|informational)\s*\|/;
+const POSTURES = new Set(["positive", "negative", "informational"]);
+const BACKTICKED = /^`.+`$/;
 
 function rowsFromDoc() {
   const set = new Set();
   for (const line of readFileSync(docPath, "utf8").split("\n")) {
-    const m = ROW_RE.exec(line);
-    if (!m) continue;
-    const [, resource, statusCell, frameworkLabel, control, posture] = m;
-    const status = statusCell.replaceAll("`", "").trim(); // already "·" for NULL
-    set.add(key(resource, status, FRAMEWORK_LABELS[frameworkLabel], control, posture));
+    if (!line.startsWith("|")) continue;
+    // Leading "|" yields an empty cells[0]; data lives in cells[1..5].
+    const cells = line.split("|").map((c) => c.trim());
+    const [, resource, statusCell, frameworkLabel, control, posture] = cells;
+    const framework = FRAMEWORK_LABELS[frameworkLabel];
+    if (!framework || !POSTURES.has(posture) || !BACKTICKED.test(resource ?? "")) continue;
+    const status = statusCell.replaceAll("`", ""); // "·" for NULL
+    set.add(key(resource.replaceAll("`", ""), status, framework, control, posture));
   }
   return set;
 }
