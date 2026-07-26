@@ -20,14 +20,16 @@ Read-only — it never modifies your repositories, permissions, or membership.
 | Signal | Evidence for |
 | --- | --- |
 | Branch protection, repository rulesets | SOC 2 CC8.1 · ISO 27001 A.8.32 |
-| Secret scanning alerts | SOC 2 CC6.6 |
-| Dependabot alerts | SOC 2 CC7.1, CC7.2 |
-| Code scanning alerts | ISO 27001 A.8.28, A.8.29 |
+| Secret scanning alerts | SOC 2 CC6.1, CC6.6 · ISO 27001 A.5.17 |
+| Dependabot alerts | SOC 2 CC7.1, CC7.2 · ISO 27001 A.8.8 |
+| Code scanning alerts | SOC 2 CC7.1 · ISO 27001 A.8.28, A.8.29 |
 | Organization / team membership | SOC 2 CC6.2, CC6.3 · ISO 27001 A.5.18 |
 | Repository inventory | ISO 27001 A.5.9 |
 
 Mappings live in `migrations/` and are applied as a join at query time, so a
-mapping can be corrected without re-ingesting history.
+mapping can be corrected without re-ingesting history. Every mapping — and the
+plain-language rationale for why each signal is evidence for its control — is
+documented in [docs/framework-mapping.md](docs/framework-mapping.md).
 
 ## How it works
 
