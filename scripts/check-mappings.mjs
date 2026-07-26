@@ -48,8 +48,11 @@ function rowsFromMigrations() {
 // distinguish these from the per-section tables (framework-first, prose posture)
 // and the glossary (bolded control in cell 1), so those are not matched.
 const FRAMEWORK_LABELS = { "SOC 2": "soc2", "ISO 27001": "iso27001" };
+// Cell captures use [^|] rather than . so a capture cannot run past a column
+// boundary — keeps the match linear (no catastrophic backtracking) and is why
+// splitting on "|" is unnecessary.
 const ROW_RE =
-  /^\|\s*`([^`]+)`\s*\|\s*(.+?)\s*\|\s*(SOC 2|ISO 27001)\s*\|\s*([\w.]+)\s*\|\s*(positive|negative|informational)\s*\|/;
+  /^\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|\s*(SOC 2|ISO 27001)\s*\|\s*([\w.]+)\s*\|\s*(positive|negative|informational)\s*\|/;
 
 function rowsFromDoc() {
   const set = new Set();
@@ -57,7 +60,7 @@ function rowsFromDoc() {
     const m = ROW_RE.exec(line);
     if (!m) continue;
     const [, resource, statusCell, frameworkLabel, control, posture] = m;
-    const status = statusCell.replace(/`/g, "").trim(); // already "·" for NULL
+    const status = statusCell.replaceAll("`", "").trim(); // already "·" for NULL
     set.add(key(resource, status, FRAMEWORK_LABELS[frameworkLabel], control, posture));
   }
   return set;
@@ -67,8 +70,8 @@ function rowsFromDoc() {
 const db = rowsFromMigrations();
 const doc = rowsFromDoc();
 
-const onlyInDb = [...db].filter((k) => !doc.has(k)).sort();
-const onlyInDoc = [...doc].filter((k) => !db.has(k)).sort();
+const onlyInDb = [...db].filter((k) => !doc.has(k)).sort((a, b) => a.localeCompare(b));
+const onlyInDoc = [...doc].filter((k) => !db.has(k)).sort((a, b) => a.localeCompare(b));
 
 if (onlyInDb.length === 0 && onlyInDoc.length === 0) {
   console.log(`✓ mappings in sync: ${db.size} rows match between migrations/ and docs/framework-mapping.md`);
