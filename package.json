@@ -18,7 +18,7 @@
     "wrangler": "^4.116.0"
   },
   "dependencies": {
-    "jose": "^6.2.4",
+    "jose": "^6.2.5",
     "pdf-lib": "^1.17.1"
   }
 }
