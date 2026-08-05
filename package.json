@@ -13,7 +13,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "typescript": "^7.0.2",
     "wrangler": "^4.116.0"
   },
