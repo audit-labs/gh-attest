@@ -4,9 +4,10 @@
 // relies on. If they drift, the doc is lying — so this fails CI.
 //
 // It works by actually applying every migration to an in-memory SQLite database
-// (so migration 0003's delete-and-reinsert is handled exactly as production D1
+// (so a migration's delete-and-reinsert is handled exactly as production D1
 // would), reading back control_mappings, and diffing against the rows parsed out
-// of the doc's "Complete mapping reference" table.
+// of the doc's "Complete mapping reference" table — including the rationale
+// text, which is what an auditor reads in every export.
 //
 // Run: npm run test:mappings   (no dependencies — uses Node's built-in sqlite)
 
@@ -22,8 +23,11 @@ const docPath = join(repoRoot, "docs", "framework-mapping.md");
 // A "·" in the doc's Status column means the mapping's status is NULL (matches
 // any status); normalize both sides to this sentinel so they compare equal.
 const NULL_STATUS = "·";
-const key = (resource, status, framework, control, posture) =>
-  `${resource}|${status ?? NULL_STATUS}|${framework}|${control}|${posture}`;
+// The rationale is part of the key: it is the auditor-facing string in every
+// export, so the doc's copy drifting from the SQL is as much a lie as a
+// wrong posture.
+const key = (resource, status, framework, control, posture, rationale) =>
+  `${resource}|${status ?? NULL_STATUS}|${framework}|${control}|${posture}|${rationale}`;
 
 // --- 1. Source of truth: apply migrations, read control_mappings. ---
 function rowsFromMigrations() {
@@ -35,10 +39,10 @@ function rowsFromMigrations() {
     db.exec(readFileSync(join(migrationsDir, file), "utf8"));
   }
   const rows = db
-    .prepare("SELECT resource, status, framework, control_id, posture FROM control_mappings")
+    .prepare("SELECT resource, status, framework, control_id, posture, rationale FROM control_mappings")
     .all();
   db.close();
-  return new Set(rows.map((r) => key(r.resource, r.status, r.framework, r.control_id, r.posture)));
+  return new Set(rows.map((r) => key(r.resource, r.status, r.framework, r.control_id, r.posture, r.rationale)));
 }
 
 // --- 2. Human-readable copy: parse the doc's reference table. ---
@@ -56,13 +60,13 @@ function rowsFromDoc() {
   const set = new Set();
   for (const line of readFileSync(docPath, "utf8").split("\n")) {
     if (!line.startsWith("|")) continue;
-    // Leading "|" yields an empty cells[0]; data lives in cells[1..5].
+    // Leading "|" yields an empty cells[0]; data lives in cells[1..6].
     const cells = line.split("|").map((c) => c.trim());
-    const [, resource, statusCell, frameworkLabel, control, posture] = cells;
+    const [, resource, statusCell, frameworkLabel, control, posture, rationale] = cells;
     const framework = FRAMEWORK_LABELS[frameworkLabel];
     if (!framework || !POSTURES.has(posture) || !BACKTICKED.test(resource ?? "")) continue;
     const status = statusCell.replaceAll("`", ""); // "·" for NULL
-    set.add(key(resource.replaceAll("`", ""), status, framework, control, posture));
+    set.add(key(resource.replaceAll("`", ""), status, framework, control, posture, rationale ?? ""));
   }
   return set;
 }
@@ -80,7 +84,7 @@ if (onlyInDb.length === 0 && onlyInDoc.length === 0) {
 }
 
 console.error("✗ control-mapping drift between migrations/ and docs/framework-mapping.md\n");
-console.error("  columns: resource | status | framework | control | posture\n");
+console.error("  columns: resource | status | framework | control | posture | rationale\n");
 if (onlyInDb.length) {
   console.error(`  In migrations but MISSING from the doc (${onlyInDb.length}):`);
   for (const k of onlyInDb) console.error(`    + ${k}`);

@@ -21,7 +21,7 @@ Read-only — it never modifies your repositories, permissions, or membership.
 | --- | --- |
 | Branch protection, repository rulesets | SOC 2 CC8.1 · ISO 27001 A.8.32 |
 | Secret scanning alerts | SOC 2 CC6.1, CC6.6 · ISO 27001 A.5.17 |
-| Dependabot alerts | SOC 2 CC7.1, CC7.2 · ISO 27001 A.8.8 |
+| Dependabot alerts | SOC 2 CC7.1 · ISO 27001 A.8.8 |
 | Code scanning alerts | SOC 2 CC7.1 · ISO 27001 A.8.28, A.8.29 |
 | Organization / team membership | SOC 2 CC6.2, CC6.3 · ISO 27001 A.5.18 |
 | Repository inventory | ISO 27001 A.5.9 |
@@ -34,8 +34,8 @@ documented in [docs/framework-mapping.md](docs/framework-mapping.md).
 ## How it works
 
 Webhooks capture changes as they happen; an hourly cron polls for state that
-webhooks never announce (protection that existed before install, and current
-membership). Each observation is stored as a timestamped snapshot in D1.
+webhooks never announce (protection and open alerts that predate the install,
+whether each scanner is enabled, and current membership). Each observation is stored as a timestamped snapshot in D1.
 Exports render off the request path via a queue, into R2.
 
 **Stack:** Cloudflare Workers · D1 · R2 · Queues. All storage is provisioned

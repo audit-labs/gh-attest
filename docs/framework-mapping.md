@@ -25,9 +25,9 @@ It is the human-readable companion to the machine-readable mappings in
 - [The frameworks in one paragraph each](#the-frameworks-in-one-paragraph-each)
 - [The signals and their mappings](#the-signals-and-their-mappings)
   - [Branch protection & repository rulesets](#1-branch-protection--repository-rulesets)
-  - [Dependabot alerts](#2-dependabot-alerts)
-  - [Code scanning alerts](#3-code-scanning-alerts)
-  - [Secret scanning alerts](#4-secret-scanning-alerts)
+  - [Dependabot](#2-dependabot)
+  - [Code scanning](#3-code-scanning)
+  - [Secret scanning](#4-secret-scanning)
   - [Membership changes (webhook trail)](#5-membership-changes-webhook-trail)
   - [Membership & team inventory (polled)](#6-membership--team-inventory-polled)
   - [Repository inventory](#7-repository-inventory)
@@ -44,25 +44,27 @@ Understanding the evidence output requires understanding four rules in the
 mapping engine. All four live in [`control_mappings`](../migrations/0002_control_mappings.sql)
 and [`buildEvidenceRows`](../src/exporter.ts).
 
-**1. A snapshot is a `(resource, status)` pair; a mapping is a row that attaches
-a control to one.** The poller and webhook handler both normalize GitHub events
-into a small vocabulary — `resource` (e.g. `branch_protection`, `dependabot_alert`)
-and `status` (e.g. `enabled`, `open`, `fixed`). See [`extractFact`](../src/webhook.ts)
-and [`poller.ts`](../src/poller.ts). Mapping happens as a **join at export time**,
-never at ingest, so a mapping can be corrected without re-ingesting history.
+**1. A snapshot is a `(resource, status)` pair about a `subject`; a mapping is a
+row that attaches a control to a `(resource, status)`.** The poller and webhook
+handler both normalize GitHub events into a small vocabulary — `resource`
+(e.g. `branch_protection`, `dependabot_alert`) and `status` (e.g. `enabled`,
+`open`, `fixed`) — plus a `subject` identifying which entity within the repo or
+org the fact is about (an alert number, a member login, a team slug). See
+[`extractFact`](../src/webhook.ts) and [`poller.ts`](../src/poller.ts). Mapping
+happens as a **join at export time**, never at ingest, so a mapping can be
+corrected without re-ingesting history.
 
 **2. `status = NULL` in a mapping matches *any* status for that resource.** The
-join condition is `cm.status IS NULL OR cm.status = l.status`. This is how a
-"the tooling exists and is producing signal" fact is expressed independently of
-any individual finding's state.
+join condition is `cm.status IS NULL OR cm.status = l.status`. This is used for
+trail/inventory resources (`team`, `repository`, `org_member`, `team_member`)
+where every state is the same kind of informational fact.
 
-**3. Consequently, one snapshot can emit multiple evidence rows.** A single
-Dependabot alert with `status = 'open'` matches *both* the `NULL` mapping
-(CC7.1, "detection tooling is active", **positive**) *and* the `'open'` mapping
-(CC7.2, "unremediated vulnerability", **negative**). This is intentional: the
-existence of the scanner and the existence of an open finding are two different
-facts about two different control expectations. This behavior is called out
-per-signal below wherever it applies.
+**3. One snapshot can emit multiple evidence rows.** A single secret-scanning
+alert with `status = 'open'` matches the `open` mapping under **each** of
+CC6.6, CC6.1 (SOC 2) and A.5.17 (ISO). This is intentional: the same fact is
+legitimate evidence for more than one control expectation, and attesting all of
+them lets the export serve whichever control the organization's narrative uses.
+This behavior is called out per-signal below wherever it applies.
 
 **4. `posture` is the auditor-facing verdict on a row**, one of:
 
@@ -70,19 +72,26 @@ per-signal below wherever it applies.
 | --- | --- | --- |
 | `positive` | State supports the control | Branch protection enabled |
 | `negative` | State is a gap against the control | Branch protection disabled; open secret |
-| `informational` | Neither pass nor fail — an audit-trail / inventory fact | A member was added; a repo exists |
+| `informational` | Neither pass nor fail — an audit-trail / inventory fact | A member was added; a finding was dismissed by a user |
 
 Two more rules affect *which* snapshots become evidence at all:
 
 - **Unmapped states produce no evidence, in either direction.** A
   `branch_protection` status of `unavailable` (GitHub returned 403 — the feature
   isn't on the repo's plan; see [`fetchBranchProtection`](../src/poller.ts)) has
-  no mapping row, so it never counts as a pass *or* a fail. Same for raw
-  `push` events.
+  no mapping row, so it never counts as a pass *or* a fail. The same applies to
+  the `disabled`/`unavailable` states of the detection-tooling resources
+  (`dependabot`, `code_scanning`, `secret_scanning`), to the trail-only
+  resources `branch_protection_rule_event` and `repository_ruleset_event`
+  (rule-scoped webhook events that can't be attributed to the default branch —
+  the poll is authoritative for state), and to raw `push` events.
 - **"Latest row wins" per `(repo, subject, resource)`** gives point-in-time
-  current posture from an append-only table. Access facts are special-cased so a
-  member who lost access stops being attested — only the most recent poll batch
-  counts. See the CTE in [`buildEvidenceRows`](../src/exporter.ts).
+  current posture from an append-only table. Because `subject` carries the
+  alert number / login / slug, this operates **per entity**: one alert being
+  fixed does not mask another alert that is still open in the same repo. Access
+  facts are further special-cased so a member who lost access stops being
+  attested — only the most recent poll batch counts. See the CTE in
+  [`buildEvidenceRows`](../src/exporter.ts).
 
 ---
 
@@ -114,14 +123,22 @@ assessment.
 
 ### 1. Branch protection & repository rulesets
 
-**What we collect.** For each repo's default branch, whether merge controls are
-in force — via the `branch_protection_rule` and `repository_ruleset` webhooks
-(change events) and an hourly poll of the branch-protection and rulesets APIs
-(baseline, for protection that predates the install). Normalized to
-`resource ∈ {branch_protection, repository_ruleset}`, `status ∈ {enabled,
-disabled}`. A ruleset in `evaluate` (monitor-only) mode counts as **not**
-enabled because it does not actually block anything — see
-[`fetchRulesets`](../src/poller.ts).
+**What we collect.** For each repo's **default branch**, whether merge controls
+are in force. The hourly poll is authoritative: the branch-protection API for
+classic protection, and the `rules/branches/{default-branch}` API for rulesets —
+which aggregates the rules from every *active* ruleset (repo- and org-level)
+that actually applies to that branch, so evaluate-mode (monitor-only) rulesets
+and rulesets targeting other branches correctly count as **not** enabled.
+Normalized to `resource ∈ {branch_protection, repository_ruleset}`, `status ∈
+{enabled, disabled}`.
+
+Webhooks supplement the poll only where they are unambiguous: a
+`branch_protection_rule` event whose rule pattern is exactly the default branch
+updates state immediately. Any other rule event — and *every*
+`repository_ruleset` event, since one ruleset's deletion says nothing about
+whether other rulesets still cover the branch — is recorded as an unmapped
+trail event (`branch_protection_rule_event`, `repository_ruleset_event`) and
+the next poll settles the state. See [`extractFact`](../src/webhook.ts).
 
 **Maps to:**
 
@@ -131,36 +148,46 @@ enabled because it does not actually block anything — see
 | ISO 27001 | **A.8.32** | *Change management.* Changes to information systems must follow formal change-management procedures to prevent unauthorized or destabilizing changes. |
 
 **Why this holds.** Branch protection / rulesets are the technical enforcement of
-change control in a Git workflow: requiring pull-request review before merge,
-blocking direct pushes to the default branch, and requiring status checks to
-pass. That is exactly the "controlled process… stops unauthorized changes"
-language of both controls. Enabled → **positive**; disabled → **negative**
-("direct pushes now possible" is a concrete change-control gap).
+change control in a Git workflow. Enabled → **positive**; disabled →
+**negative** ("direct pushes possible" is a concrete change-control gap).
 
-**Fit assessment: strong.** This is the least ambiguous mapping in the system —
-both frameworks name "change management" explicitly, and branch protection is
-the canonical GitHub-native implementation of it. The one nuance an auditor will
-probe is *scope*: we check the **default branch** only, and "enabled" does not
-verify that the *specific* rules (required reviewers, etc.) match the
-organization's policy. The evidence attests that a change-control gate exists,
-not that its configuration is sufficient.
+**Fit assessment: strong, with the scope stated in the evidence itself.** Both
+frameworks name "change management" explicitly, and branch protection is the
+canonical GitHub-native implementation of it. What the evidence attests is that
+a change-control gate **exists on the default branch** — it does not verify that
+the *specific* rules (required reviewers, status checks, …) match the
+organization's policy, and the exported rationale says so explicitly ("rule
+contents not verified") rather than claiming review is required.
 
-### 2. Dependabot alerts
+### 2. Dependabot
 
-**What we collect.** `dependabot_alert` webhook events — known-vulnerability
-alerts against the repo's dependencies. `status` is the alert state: `open`,
-`fixed`, `dismissed`, `auto_dismissed`.
+**What we collect.** Two distinct facts:
+
+- **Tooling state** (`resource = dependabot`, `status ∈ {enabled, disabled,
+  unavailable}`) — the hourly poll checks whether Dependabot alerts are enabled
+  on each repo (the alert-list API answering at all is the signal; see
+  [`pollRepoAlerts`](../src/poller.ts)). Only `enabled` is mapped; a disabled or
+  unavailable scanner is recorded but deliberately produces no evidence either
+  way, matching the branch-protection `unavailable` precedent.
+- **Findings** (`resource = dependabot_alert`, `status ∈ {open, fixed,
+  dismissed, auto_dismissed}`, `subject` = alert number) — from
+  `dependabot_alert` webhooks, plus the same hourly poll re-recording every
+  *open* alert. The poll matters twice: alerts already open before the App was
+  installed never sent a webhook, and an open alert with no events for the
+  whole retention window would otherwise age out of evidence.
 
 **Maps to:**
 
 | Framework | Control | When | Posture |
 | --- | --- | --- | --- |
-| SOC 2 | **CC7.1** | any alert (`status = NULL`) | positive — "detection tooling is active" |
-| SOC 2 | **CC7.2** | `open` | negative — "unremediated known vulnerability" |
-| SOC 2 | **CC7.2** | `fixed` / `dismissed` / `auto_dismissed` | positive — "remediated" |
-| ISO 27001 | **A.8.8** | any alert (`status = NULL`) | positive — "technical vulnerability management active" |
-| ISO 27001 | **A.8.8** | `open` | negative — "unremediated known vulnerability" |
-| ISO 27001 | **A.8.8** | `fixed` / `dismissed` / `auto_dismissed` | positive — "remediated" |
+| SOC 2 | **CC7.1** | tooling `enabled` | positive — detection tooling is on |
+| SOC 2 | **CC7.1** | `open` | negative — unremediated known vulnerability |
+| SOC 2 | **CC7.1** | `fixed` / `auto_dismissed` | positive — remediated (machine-verified) |
+| SOC 2 | **CC7.1** | `dismissed` | informational — human risk-acceptance, justification subject to review |
+| ISO 27001 | **A.8.8** | tooling `enabled` | positive — vulnerability management active |
+| ISO 27001 | **A.8.8** | `open` | negative — unremediated known vulnerability |
+| ISO 27001 | **A.8.8** | `fixed` / `auto_dismissed` | positive — remediated (machine-verified) |
+| ISO 27001 | **A.8.8** | `dismissed` | informational — human risk-acceptance, justification subject to review |
 
 **Control meanings.**
 - **CC7.1** — *Detection & monitoring.* The entity uses detection procedures to
@@ -168,101 +195,97 @@ alerts against the repo's dependencies. `status` is the alert state: `open`,
   susceptibilities to *newly discovered* vulnerabilities. Dependabot is a
   textbook example: it continuously matches your dependency tree against newly
   published CVEs.
-- **CC7.2** — *Anomaly monitoring.* The entity monitors system components for
-  anomalies and analyzes them to determine whether they are security events.
 - **A.8.8** — *Management of technical vulnerabilities.* Information about
   technical vulnerabilities must be obtained, exposure evaluated, and
-  appropriate measures taken. This is a single control spanning the whole
-  vulnerability lifecycle — detect, evaluate, remediate.
+  appropriate measures taken — one control spanning the whole lifecycle.
 
-**Why this holds.** The *presence* of Dependabot alerts proves the detection
-capability required by CC7.1 exists and is running — hence the `NULL` mapping
-fires positive on any alert regardless of state. Each *individual* alert's
-lifecycle (open vs. remediated) is then evidence for CC7.2: an open alert is an
-unresolved condition, a fixed/dismissed one is a closed one. On the **ISO** side
-the entire story lands on a *single* control, A.8.8, because A.8.8 explicitly
-covers the full lifecycle — so every status maps to A.8.8 (open → negative,
-remediated → positive, tooling-active → positive). See
-[migration 0007](../migrations/0007_close_coverage_gaps.sql).
+**Why this holds.** The tooling-`enabled` fact proves the detection capability
+required by CC7.1/A.8.8 exists and is on *right now* — it comes from the
+feature's own state, not (as in earlier versions) from inference off the latest
+alert event, which kept attesting after a scanner was switched off and never
+fired for a clean repo. Each individual alert's lifecycle is then finding-level
+evidence under the same controls: an open alert is an unresolved known
+vulnerability; a `fixed` (patched) or `auto_dismissed` (e.g. dependency
+removed) alert is a machine-verified closure; a `dismissed` alert is a **human
+decision** — it may be sound risk acceptance or may be rubber-stamping, and the
+justification is exactly what an auditor samples, so it is recorded as
+informational rather than claimed as remediation.
 
-**Fit assessment: CC7.1 strong; CC7.2 defensible but the weakest link in the
-system.** CC7.2's formal text is about anomalies "indicative of malicious acts,
-natural disasters, and errors" — i.e. runtime security events. An unpatched
-dependency is a *known vulnerability*, which sits more naturally in CC7.1's
-"susceptibility to newly discovered vulnerabilities" language than in CC7.2's
-anomaly-detection language. Many auditors keep the **entire** dependency story
-(detection *and* remediation tracking) under CC7.1. **Recommendation:** before
-you present this to an auditor, decide whether open/remediated Dependabot state
-belongs under CC7.1 or CC7.2 in your control narrative, and align the mapping to
-that decision. Both are defensible; the current split is a design choice, not a
-requirement. The **ISO A.8.8** mapping, by contrast, is a strong, clean fit —
-A.8.8 is purpose-built for technical-vulnerability management and absorbs the
-whole lifecycle without the CC7.1/CC7.2 ambiguity. It was added in migration 0007
-to close a gap: before it, Dependabot produced no evidence at all in an ISO
-export.
+**Fit assessment: strong on both frameworks.** The whole SOC 2 lifecycle sits
+under CC7.1, whose "susceptibility to newly discovered vulnerabilities"
+language covers known-CVE management directly. (Earlier versions split
+open/remediated state to CC7.2; CC7.2's anomaly-monitoring text is about
+runtime security events, which made it the weakest link in the system — that
+split has been removed.) A.8.8 is purpose-built for this signal and absorbs the
+whole lifecycle.
 
-### 3. Code scanning alerts
+### 3. Code scanning
 
-**What we collect.** `code_scanning_alert` webhook events — SAST findings from
-CodeQL or a third-party analyzer. `status ∈ {open, fixed, dismissed}`.
+**What we collect.** Same two-fact shape as Dependabot: tooling state
+(`resource = code_scanning`, from the hourly poll; only `enabled` mapped) and
+findings (`resource = code_scanning_alert`, `status ∈ {open, fixed,
+dismissed}`, `subject` = alert number) from `code_scanning_alert` webhooks plus
+the hourly re-record of open alerts. Findings are SAST results from CodeQL or a
+third-party analyzer.
 
 **Maps to:**
 
 | Framework | Control | When | Posture |
 | --- | --- | --- | --- |
-| ISO 27001 | **A.8.29** | any alert (`status = NULL`) | positive — "security testing in development is active" |
-| ISO 27001 | **A.8.28** | `open` | negative — "unremediated finding" |
-| ISO 27001 | **A.8.28** | `fixed` / `dismissed` | positive — "remediated" |
-| SOC 2 | **CC7.1** | any alert (`status = NULL`) | positive — "detection tooling is active" |
+| ISO 27001 | **A.8.29** | tooling `enabled` | positive — security testing in development is on |
+| ISO 27001 | **A.8.28** | `open` | negative — unremediated finding |
+| ISO 27001 | **A.8.28** | `fixed` | positive — remediated |
+| ISO 27001 | **A.8.28** | `dismissed` | informational — human risk-acceptance, justification subject to review |
+| SOC 2 | **CC7.1** | tooling `enabled` | positive — detection tooling is on |
+| SOC 2 | **CC7.1** | `open` | negative — unremediated finding |
+| SOC 2 | **CC7.1** | `fixed` | positive — remediated |
+| SOC 2 | **CC7.1** | `dismissed` | informational — human risk-acceptance, justification subject to review |
 
 **Control meanings.**
 - **A.8.29** — *Security testing in development and acceptance.* Security testing
-  processes must be defined and run within the development lifecycle so
-  vulnerabilities are found before production. The existence of code scanning
-  *is* that testing process.
+  processes must be defined and run within the development lifecycle. The
+  existence of code scanning *is* that testing process.
 - **A.8.28** — *Secure coding.* Secure coding principles must be applied during
   development. An open finding is evidence of a secure-coding gap in the source;
   a remediated one is evidence the gap was closed.
 - **CC7.1** — *Detection & monitoring.* (Same control as Dependabot's SOC 2
-  mapping.) Code scanning is detection tooling that surfaces vulnerabilities, so
-  its presence satisfies the "detection procedures exist and run" expectation.
+  mapping.)
 
 **Why this holds.** On the **ISO** side this splits cleanly across two controls
-that map to two facts: *"a testing process exists"* (A.8.29, from the `NULL`
-mapping) versus *"the code itself is/ isn't secure"* (A.8.28, from each finding's
-state). On the **SOC 2** side (added in [migration 0007](../migrations/0007_close_coverage_gaps.sql))
-only the tooling-active fact is mapped, to CC7.1 — mirroring how Dependabot's
-tooling-active fact maps to CC7.1.
+that map to two facts: *"a testing process exists"* (A.8.29, from tooling
+state) versus *"the code itself is / isn't secure"* (A.8.28, from each
+finding's state). On the **SOC 2** side the full lifecycle mirrors Dependabot
+under CC7.1 — the finding-level rows were previously deferred pending the
+CC7.1-vs-CC7.2 decision, which is now settled in CC7.1's favor.
 
-**Fit assessment: strong on ISO; SOC 2 intentionally partial.** The
-A.8.29-vs-A.8.28 split is clean — one control is about *having* the testing
-process, the other about the *code quality* it reveals — and both titles match
-the signal directly. The new SOC 2 CC7.1 mapping covers only detection-active,
-**not** finding-level state: code-scanning `open`/`fixed` rows are deliberately
-*not* routed to CC7.2, because whether the vulnerability lifecycle belongs under
-CC7.1 or CC7.2 is still an open decision (see the Dependabot fit assessment). Once
-that is settled, finding-level SOC 2 rows for code scanning can be added to match
-Dependabot. Until then a SOC 2 export shows code scanning as "detection active"
-only — which under-claims rather than over-claims, the safe direction.
+**Fit assessment: strong on both.** The A.8.29-vs-A.8.28 split follows the
+controls' own having-a-process vs. code-quality distinction, and the SOC 2 side
+is now symmetric with Dependabot rather than intentionally partial.
 
-### 4. Secret scanning alerts
+### 4. Secret scanning
 
-**What we collect.** `secret_scanning_alert` webhook events — detected
-credentials/tokens committed to the repo. `status ∈ {open, resolved}`.
+**What we collect.** Tooling state (`resource = secret_scanning`, from the
+hourly poll; only `enabled` mapped) and findings (`resource =
+secret_scanning_alert`, `status ∈ {open, resolved}`, `subject` = alert number)
+from `secret_scanning_alert` webhooks plus the hourly re-record of open alerts.
+One payload quirk matters: unlike the other two alert payloads, the
+secret-scanning webhook alert carries **no `state` field** — ingest derives
+open/resolved from `alert.resolution`, which is set iff the alert is resolved
+(see [`extractFact`](../src/webhook.ts)).
 
 **Maps to:**
 
 | Framework | Control | When | Posture |
 | --- | --- | --- | --- |
-| SOC 2 | **CC6.6** | any alert (`status = NULL`) | positive — "leaked-credential detection is active" |
-| SOC 2 | **CC6.6** | `open` | negative — "live credential exposure" |
-| SOC 2 | **CC6.6** | `resolved` | positive — "exposure remediated" |
-| SOC 2 | **CC6.1** | any alert (`status = NULL`) | positive — "logical-access credential protection active" |
-| SOC 2 | **CC6.1** | `open` | negative — "exposed credential undermines logical access controls" |
-| SOC 2 | **CC6.1** | `resolved` | positive — "logical access control restored" |
-| ISO 27001 | **A.5.17** | any alert (`status = NULL`) | positive — "authentication-information protection active" |
-| ISO 27001 | **A.5.17** | `open` | negative — "exposed authentication information" |
-| ISO 27001 | **A.5.17** | `resolved` | positive — "exposure remediated" |
+| SOC 2 | **CC6.6** | tooling `enabled` | positive — leaked-credential detection is on |
+| SOC 2 | **CC6.6** | `open` | negative — live credential exposure |
+| SOC 2 | **CC6.6** | `resolved` | informational — resolution reason subject to review |
+| SOC 2 | **CC6.1** | tooling `enabled` | positive — logical-access credential protection is on |
+| SOC 2 | **CC6.1** | `open` | negative — exposed credential undermines logical access controls |
+| SOC 2 | **CC6.1** | `resolved` | informational — resolution reason subject to review |
+| ISO 27001 | **A.5.17** | tooling `enabled` | positive — authentication-information protection is on |
+| ISO 27001 | **A.5.17** | `open` | negative — exposed authentication information |
+| ISO 27001 | **A.5.17** | `resolved` | informational — resolution reason subject to review |
 
 **Control meanings.**
 - **CC6.6** — *Protection against external threats.* The entity implements
@@ -279,65 +302,70 @@ credentials/tokens committed to the repo. `status ∈ {open, resolved}`.
 
 **Why this holds.** A committed credential is relevant to all three controls at
 once. For **CC6.6**, it is a direct path for an *external* attacker to cross the
-system boundary. For **CC6.1**, the credential is itself one of the logical-access
-keys the control is meant to safeguard, so a leak is a compromise of the access
-controls themselves. For **A.5.17**, the credential is authentication information
-whose confidentiality the control requires. In every case: scanning active →
-**positive** (a protective measure exists); open alert → **negative** (a live
-gap); resolved → **positive** (gap closed). See
-[migration 0006](../migrations/0006_secret_scanning_cc6_1.sql) (CC6.1) and
-[migration 0007](../migrations/0007_close_coverage_gaps.sql) (A.5.17).
+system boundary. For **CC6.1**, the credential is itself one of the
+logical-access keys the control is meant to safeguard. For **A.5.17**, the
+credential is authentication information whose confidentiality the control
+requires. Scanning enabled → **positive**; open alert → **negative**. A
+`resolved` alert is **informational**, not positive: GitHub's resolution
+reasons include `wont_fix`, so "resolved" may mean the credential was revoked
+*or* that someone decided to leave it — the recorded reason is what the
+reviewer must check.
 
 **Fit assessment: all three defensible.** CC6.6 is the external-threat framing,
 CC6.1 the logical-access framing, A.5.17 the ISO authentication-information
-framing (added in migration 0007 to close a gap — before it, secret scanning
-produced no ISO evidence). Mapping to all three means the export satisfies
-whichever control the organization's narrative uses. A further SOC 2 framing,
+framing. Mapping to all three means the export satisfies whichever control the
+organization's narrative uses — at the cost of row multiplicity: one open
+secret emits a negative under each of the three. A further SOC 2 framing,
 **CC6.7** (restricting the transmission/movement of information), also touches
-this and could be added if an auditor prefers it. Note the multiplicity: one
-`open` secret now emits **six** rows — a positive ("scanner running") and a
-negative ("open exposure") under *each* of CC6.6, CC6.1 (SOC 2 export) and A.5.17
-(ISO export). That is intended and reads correctly, but expect the row counts to
-scale accordingly.
+this and could be added if an auditor prefers it.
 
 ### 5. Membership changes (webhook trail)
 
-**What we collect.** `member`, `team`, and `repository` webhook events — the
-*change* events, recording that an access-related mutation happened. Normalized
-to `resource ∈ {member_access, team, repository}` with the GitHub action as
-status.
+**What we collect.** The *change* events for access administration, each with a
+`subject` so the trail keeps one latest row per person/team rather than one per
+repo:
+
+- `member` webhook → `resource = member_access`, subject = the collaborator's
+  login. **Scope note: this event covers repository collaborators**, not org
+  members.
+- `organization` webhook → `resource = org_membership`, subject = the member's
+  login (or the invitee's login/email). This is where org-level joins, removals
+  and invitations arrive.
+- `team` webhook → `resource = team`, subject = the team slug.
 
 **Maps to:**
 
 | Framework | Control | When | Posture |
 | --- | --- | --- | --- |
-| SOC 2 | **CC6.2** | `member_access` `added` | informational — "access grant, logged for review" |
-| SOC 2 | **CC6.3** | `member_access` `removed` | positive — "timely access removal" |
-| SOC 2 | **CC6.3** | `member_access` `edited` | informational — "access-level change, logged" |
-| ISO 27001 | **A.5.18** | `team` (any) | informational — "access-rights change, audit trail" |
+| SOC 2 | **CC6.2** | `member_access` `added`, `org_membership` `member_added` / `member_invited` | informational — access grant / invitation, logged for review |
+| SOC 2 | **CC6.3** | `member_access` `removed` / `edited`, `org_membership` `member_removed` | informational — modification / deprovisioning recorded |
+| ISO 27001 | **A.5.18** | all of the above | informational — access-rights change, audit trail |
+| ISO 27001 | **A.5.18** | `team` (any) | informational — access-rights change, audit trail |
 
 **Control meanings.**
 - **CC6.2** — *Registration & authorization of new users.* Before credentials are
   issued, new users are registered and authorized; credentials are removed when
-  access is no longer authorized. A member being *added* is the provisioning
-  event this criterion governs.
+  access is no longer authorized. A member being *added* or *invited* is the
+  provisioning event this criterion governs.
 - **CC6.3** — *Authorize / modify / remove access.* Access is authorized,
   modified, or removed based on roles, least privilege, and segregation of
-  duties. Member *removal* and *role change* are the modify/remove events here.
+  duties. Removal and role change are the modify/remove events here.
 - **A.5.18** — *Access rights.* Access rights are provisioned, reviewed,
-  modified, and removed per the access-control policy. A team membership change
-  is an access-rights mutation on that trail.
+  modified, and removed per the access-control policy.
 
 **Why this holds & posture logic.** These are the *audit trail* of access
 administration — evidence that grants/changes are captured, which is what an
-auditor samples. Most are **informational** (an add or a role change is neither
-inherently good nor bad — it needs human review). The one exception is
-`removed` → **positive**, because timely de-provisioning is itself a control
-objective (CC6.3), so a captured removal is affirmative evidence.
+auditor samples. **All rows are informational**, removals included: the event
+proves a removal happened and when, but not that it was *timely* relative to an
+offboarding trigger the system cannot see — so the rationale says
+"deprovisioning recorded; timeliness subject to review" rather than claiming
+timeliness as a positive. (Earlier versions claimed "timely access removal";
+that was rounding up.)
 
 **Fit assessment: strong on the CC6.2/CC6.3 split** (it follows the criteria's
-own provisioning-vs-modification language). The informational posture is the
-right call — this data feeds the access review, it does not pass/fail on its own.
+own provisioning-vs-modification language), and honest about scope now that
+repo-collaborator and org-member events are separate resources with separate
+rationales.
 
 ### 6. Membership & team inventory (polled)
 
@@ -351,9 +379,9 @@ point-in-time snapshot — this is what powers the [access-review diff](../src/a
 
 | Framework | Control | Resource | Posture |
 | --- | --- | --- | --- |
-| SOC 2 | **CC6.2** | `org_member` | informational — "org access inventory, subject to periodic review" |
-| SOC 2 | **CC6.3** | `team_member` | informational — "team-based access inventory" |
-| ISO 27001 | **A.5.18** | `org_member`, `team_member` | informational — "access-rights inventory" |
+| SOC 2 | **CC6.2** | `org_member` | informational — org access inventory, subject to periodic review |
+| SOC 2 | **CC6.3** | `team_member` | informational — team-based access inventory |
+| ISO 27001 | **A.5.18** | `org_member`, `team_member` | informational — access-rights inventory |
 
 **Why this holds.** A point-in-time roster of who has access is the raw material
 of a periodic access review — the recurring auditor ask that CC6.2/CC6.3 and
@@ -368,20 +396,21 @@ reasonable but not the only defensible cut — the *review* of org membership is
 arguably as much CC6.3 (appropriateness of access) as CC6.2 (registration). Since
 these are informational inventory rows feeding a review, the exact CC6.2/CC6.3
 attribution is low-stakes; A.5.18 is unambiguous. Note the two resource families
-(`member_access`/`team` webhook trail vs. `org_member`/`team_member` polled
-inventory) are deliberately separate resource names so the change-trail and the
-current-state inventory don't collide.
+(`member_access`/`org_membership`/`team` webhook trail vs.
+`org_member`/`team_member` polled inventory) are deliberately separate resource
+names so the change-trail and the current-state inventory don't collide.
 
 ### 7. Repository inventory
 
 **What we collect.** `repository` webhook events — repos created/deleted/renamed
-within the installation. `resource = repository`.
+and visibility changes within the installation. `resource = repository`.
 
 **Maps to:**
 
-| Framework | Control | Posture |
-| --- | --- | --- |
-| ISO 27001 | **A.5.9** | informational — "asset inventory trail" |
+| Framework | Control | When | Posture |
+| --- | --- | --- | --- |
+| ISO 27001 | **A.5.9** | any action | informational — asset inventory trail |
+| SOC 2 | **CC6.1** | `publicized` | informational — repo made public, flagged for review |
 
 **Control meaning.**
 - **A.5.9** — *Inventory of information and other associated assets.* A complete,
@@ -389,8 +418,11 @@ within the installation. `resource = repository`.
 
 **Why this holds.** Repositories are information assets. The trail of repo
 create/delete/rename events is evidence that the asset inventory is maintained as
-it changes — exactly A.5.9's requirement. **Informational**: it is inventory, not
-a pass/fail condition.
+it changes — exactly A.5.9's requirement. One action gets an extra row: a repo
+being **publicized** is a visibility change with direct confidentiality impact,
+so it is additionally surfaced under CC6.1 rather than left as a generic
+inventory tick. Both rows are **informational** — whether going public was
+intended is a judgment the reviewer makes.
 
 **Fit assessment: strong for what it claims.** The honest caveat is completeness:
 this is a *change trail*, so it evidences that inventory changes are captured, not
@@ -404,56 +436,72 @@ webhook trail.
 ## Complete mapping reference
 
 This table is the authoritative human-readable copy of every row in
-[`control_mappings`](../migrations/0002_control_mappings.sql) after all migrations
-(0002 seeds most; 0003 replaces branch-protection/ruleset with the
+[`control_mappings`](../migrations/0002_control_mappings.sql) after all
+migrations (0002 seeds most; 0003 replaces branch-protection/ruleset with the
 enabled/disabled vocabulary; 0005 adds the polled access inventory; 0006 adds
-the secret-scanning CC6.1 rows; 0007 closes the cross-framework coverage gaps —
-Dependabot→A.8.8, code scanning→CC7.1, secret scanning→A.5.17). **A "·" in
-Status means the mapping's `status` is `NULL` — it matches any status.**
+the secret-scanning CC6.1 rows; 0007 closes cross-framework coverage gaps; 0008
+applies the mapping-review fixes — per-entity subjects, polled tooling state,
+the CC7.1 consolidation, and informational postures for human dismissals).
+**A "·" in Status means the mapping's `status` is `NULL` — it matches any
+status.** The Rationale column is the exact auditor-facing string in the
+database, and is CI-checked against it.
 
 | Resource | Status | Framework | Control | Posture | Rationale |
 | --- | --- | --- | --- | --- | --- |
-| `branch_protection` | `enabled` | SOC 2 | CC8.1 | positive | Change management — review before merge |
-| `branch_protection` | `disabled` | SOC 2 | CC8.1 | negative | Change-control gap — direct pushes possible |
-| `branch_protection` | `enabled` | ISO 27001 | A.8.32 | positive | Change management |
-| `branch_protection` | `disabled` | ISO 27001 | A.8.32 | negative | Change-control gap — direct pushes possible |
-| `repository_ruleset` | `enabled` | SOC 2 | CC8.1 | positive | Change management — review before merge |
-| `repository_ruleset` | `disabled` | SOC 2 | CC8.1 | negative | Change-control gap — direct pushes possible |
-| `repository_ruleset` | `enabled` | ISO 27001 | A.8.32 | positive | Change management |
-| `repository_ruleset` | `disabled` | ISO 27001 | A.8.32 | negative | Change-control gap — direct pushes possible |
-| `dependabot_alert` | · | SOC 2 | CC7.1 | positive | Detection tooling is active |
-| `dependabot_alert` | `open` | SOC 2 | CC7.2 | negative | Unremediated known vulnerability |
-| `dependabot_alert` | `fixed` | SOC 2 | CC7.2 | positive | Remediated |
-| `dependabot_alert` | `dismissed` | SOC 2 | CC7.2 | positive | Remediated (risk accepted) |
-| `dependabot_alert` | `auto_dismissed` | SOC 2 | CC7.2 | positive | Remediated (e.g. dependency removed) |
-| `dependabot_alert` | · | ISO 27001 | A.8.8 | positive | Technical vulnerability management — detection active |
+| `branch_protection` | `enabled` | SOC 2 | CC8.1 | positive | Change management — a protection rule is enforced on the default branch (rule contents not verified) |
+| `branch_protection` | `disabled` | SOC 2 | CC8.1 | negative | Change-control gap — no protection on the default branch; direct pushes possible |
+| `branch_protection` | `enabled` | ISO 27001 | A.8.32 | positive | Change management — a protection rule is enforced on the default branch (rule contents not verified) |
+| `branch_protection` | `disabled` | ISO 27001 | A.8.32 | negative | Change-control gap — no protection on the default branch; direct pushes possible |
+| `repository_ruleset` | `enabled` | SOC 2 | CC8.1 | positive | Change management — an active ruleset covers the default branch (rule contents not verified) |
+| `repository_ruleset` | `disabled` | SOC 2 | CC8.1 | negative | Change-control gap — no active ruleset covers the default branch |
+| `repository_ruleset` | `enabled` | ISO 27001 | A.8.32 | positive | Change management — an active ruleset covers the default branch (rule contents not verified) |
+| `repository_ruleset` | `disabled` | ISO 27001 | A.8.32 | negative | Change-control gap — no active ruleset covers the default branch |
+| `dependabot` | `enabled` | SOC 2 | CC7.1 | positive | Detection tooling — Dependabot alerts are enabled on the repository |
+| `dependabot` | `enabled` | ISO 27001 | A.8.8 | positive | Technical vulnerability management — Dependabot alerts are enabled on the repository |
+| `code_scanning` | `enabled` | SOC 2 | CC7.1 | positive | Detection tooling — code scanning is enabled on the repository |
+| `code_scanning` | `enabled` | ISO 27001 | A.8.29 | positive | Security testing in development — code scanning is enabled on the repository |
+| `secret_scanning` | `enabled` | SOC 2 | CC6.6 | positive | Leaked-credential detection — secret scanning is enabled on the repository |
+| `secret_scanning` | `enabled` | SOC 2 | CC6.1 | positive | Logical-access credential protection — secret scanning is enabled on the repository |
+| `secret_scanning` | `enabled` | ISO 27001 | A.5.17 | positive | Authentication-information protection — secret scanning is enabled on the repository |
+| `dependabot_alert` | `open` | SOC 2 | CC7.1 | negative | Unremediated known vulnerability |
+| `dependabot_alert` | `fixed` | SOC 2 | CC7.1 | positive | Vulnerability remediated |
+| `dependabot_alert` | `dismissed` | SOC 2 | CC7.1 | informational | Dismissed by a user — risk-acceptance justification subject to review |
+| `dependabot_alert` | `auto_dismissed` | SOC 2 | CC7.1 | positive | Auto-dismissed by GitHub (e.g. dependency removed) |
 | `dependabot_alert` | `open` | ISO 27001 | A.8.8 | negative | Unremediated known technical vulnerability |
 | `dependabot_alert` | `fixed` | ISO 27001 | A.8.8 | positive | Vulnerability remediated |
-| `dependabot_alert` | `dismissed` | ISO 27001 | A.8.8 | positive | Vulnerability remediated (risk accepted) |
-| `dependabot_alert` | `auto_dismissed` | ISO 27001 | A.8.8 | positive | Vulnerability remediated (e.g. dependency removed) |
-| `code_scanning_alert` | · | ISO 27001 | A.8.29 | positive | Security testing in development is active |
-| `code_scanning_alert` | `open` | ISO 27001 | A.8.28 | negative | Unremediated finding |
-| `code_scanning_alert` | `fixed` | ISO 27001 | A.8.28 | positive | Remediated |
-| `code_scanning_alert` | `dismissed` | ISO 27001 | A.8.28 | positive | Remediated (risk accepted) |
-| `code_scanning_alert` | · | SOC 2 | CC7.1 | positive | Detection tooling is active (findings unmapped in SOC 2) |
-| `secret_scanning_alert` | · | SOC 2 | CC6.6 | positive | Leaked-credential detection is active |
+| `dependabot_alert` | `dismissed` | ISO 27001 | A.8.8 | informational | Dismissed by a user — risk-acceptance justification subject to review |
+| `dependabot_alert` | `auto_dismissed` | ISO 27001 | A.8.8 | positive | Auto-dismissed by GitHub (e.g. dependency removed) |
+| `code_scanning_alert` | `open` | SOC 2 | CC7.1 | negative | Unremediated static-analysis finding |
+| `code_scanning_alert` | `fixed` | SOC 2 | CC7.1 | positive | Finding remediated |
+| `code_scanning_alert` | `dismissed` | SOC 2 | CC7.1 | informational | Dismissed by a user — risk-acceptance justification subject to review |
+| `code_scanning_alert` | `open` | ISO 27001 | A.8.28 | negative | Unremediated static-analysis finding |
+| `code_scanning_alert` | `fixed` | ISO 27001 | A.8.28 | positive | Finding remediated |
+| `code_scanning_alert` | `dismissed` | ISO 27001 | A.8.28 | informational | Dismissed by a user — risk-acceptance justification subject to review |
 | `secret_scanning_alert` | `open` | SOC 2 | CC6.6 | negative | Live credential exposure |
-| `secret_scanning_alert` | `resolved` | SOC 2 | CC6.6 | positive | Exposure remediated |
-| `secret_scanning_alert` | · | SOC 2 | CC6.1 | positive | Logical-access credential protection — detection active |
+| `secret_scanning_alert` | `resolved` | SOC 2 | CC6.6 | informational | Resolution recorded — reason (revoked vs. won't-fix) subject to review |
 | `secret_scanning_alert` | `open` | SOC 2 | CC6.1 | negative | Exposed credential undermines logical access controls |
-| `secret_scanning_alert` | `resolved` | SOC 2 | CC6.1 | positive | Logical access control restored — exposure remediated |
-| `secret_scanning_alert` | · | ISO 27001 | A.5.17 | positive | Authentication-information protection — detection active |
+| `secret_scanning_alert` | `resolved` | SOC 2 | CC6.1 | informational | Resolution recorded — reason (revoked vs. won't-fix) subject to review |
 | `secret_scanning_alert` | `open` | ISO 27001 | A.5.17 | negative | Exposed authentication information |
-| `secret_scanning_alert` | `resolved` | ISO 27001 | A.5.17 | positive | Authentication-information exposure remediated |
-| `member_access` | `added` | SOC 2 | CC6.2 | informational | Access grant — logged for review |
-| `member_access` | `removed` | SOC 2 | CC6.3 | positive | Timely access removal |
-| `member_access` | `edited` | SOC 2 | CC6.3 | informational | Access-level change — logged for review |
+| `secret_scanning_alert` | `resolved` | ISO 27001 | A.5.17 | informational | Resolution recorded — reason (revoked vs. won't-fix) subject to review |
+| `member_access` | `added` | SOC 2 | CC6.2 | informational | Repository collaborator added — access grant logged for review |
+| `member_access` | `removed` | SOC 2 | CC6.3 | informational | Repository collaborator removed — deprovisioning recorded; timeliness subject to review |
+| `member_access` | `edited` | SOC 2 | CC6.3 | informational | Repository collaborator permission changed — logged for review |
+| `member_access` | `added` | ISO 27001 | A.5.18 | informational | Repository collaborator added — access-rights change, audit trail |
+| `member_access` | `removed` | ISO 27001 | A.5.18 | informational | Repository collaborator removed — access-rights change, audit trail |
+| `member_access` | `edited` | ISO 27001 | A.5.18 | informational | Repository collaborator permission changed — access-rights change, audit trail |
+| `org_membership` | `member_added` | SOC 2 | CC6.2 | informational | Organization member added — access grant logged for review |
+| `org_membership` | `member_removed` | SOC 2 | CC6.3 | informational | Organization member removed — deprovisioning recorded; timeliness subject to review |
+| `org_membership` | `member_invited` | SOC 2 | CC6.2 | informational | Organization invitation issued — logged for review |
+| `org_membership` | `member_added` | ISO 27001 | A.5.18 | informational | Organization member added — access-rights change, audit trail |
+| `org_membership` | `member_removed` | ISO 27001 | A.5.18 | informational | Organization member removed — access-rights change, audit trail |
+| `org_membership` | `member_invited` | ISO 27001 | A.5.18 | informational | Organization invitation issued — access-rights change, audit trail |
 | `team` | · | ISO 27001 | A.5.18 | informational | Access-rights change, audit trail |
 | `repository` | · | ISO 27001 | A.5.9 | informational | Asset inventory trail |
-| `org_member` | · | SOC 2 | CC6.2 | informational | Org access inventory — subject to periodic review |
-| `org_member` | · | ISO 27001 | A.5.18 | informational | Access-rights inventory |
+| `repository` | `publicized` | SOC 2 | CC6.1 | informational | Repository made public — visibility change affecting asset confidentiality, flagged for review |
+| `org_member` | · | SOC 2 | CC6.2 | informational | Organization access inventory — subject to periodic access review |
+| `org_member` | · | ISO 27001 | A.5.18 | informational | Access rights inventory |
 | `team_member` | · | SOC 2 | CC6.3 | informational | Team-based access inventory |
-| `team_member` | · | ISO 27001 | A.5.18 | informational | Access-rights inventory |
+| `team_member` | · | ISO 27001 | A.5.18 | informational | Access rights inventory |
 
 ### Control glossary
 
@@ -464,7 +512,6 @@ Status means the mapping's `status` is `NULL` — it matches any status.**
 | **CC6.3** | Authorize, modify, and remove access by role, with least privilege and segregation of duties |
 | **CC6.6** | Protect against threats originating outside the system boundary |
 | **CC7.1** | Detect configuration changes that introduce vulnerabilities, and susceptibility to newly discovered ones |
-| **CC7.2** | Monitor components for anomalies and analyze them as potential security events |
 | **CC8.1** | Put changes through an authorized, controlled process; block unauthorized changes |
 | **A.5.9** | Maintain an inventory of information and associated assets, with owners |
 | **A.5.17** | Control the allocation and management of authentication information (passwords, keys, tokens) |
@@ -501,20 +548,23 @@ so bias toward under-claiming.
    mapping is worth more to an auditor than three tenuous ones. Tenuous mappings
    erode trust in the whole evidence pack.
 4. **Assign posture from the control's expectation, not the signal's sentiment:**
-   - `positive` — the state is what the control wants.
+   - `positive` — the state is what the control wants, and the platform verified
+     it (not merely a human clicking "dismiss").
    - `negative` — the state is a concrete gap the control would flag.
    - `informational` — the state is audit-trail/inventory that feeds a review but
-     is not itself pass/fail. When in doubt, use `informational`.
-5. **Decide detection-vs-finding.** If the signal is a scanner/alert stream, you
-   usually want two mapping kinds: a `status = NULL` row for "the control's
-   *tooling* exists" (positive), and per-status rows for individual findings.
-   Remember rule 3 in [How mapping works](#how-mapping-works-mechanically): both
-   fire on the same snapshot.
+     is not itself pass/fail. Human decisions (dismissals, resolutions with a
+     reason) belong here. When in doubt, use `informational`.
+5. **Separate tooling state from findings.** If the signal is a scanner/alert
+   stream, attest "the control's *tooling* is on" from the feature's own state
+   (polled), not from the existence of alerts — and attest each finding's
+   lifecycle per alert, with the alert number as `subject` so findings don't
+   mask each other.
 6. **Pin the edition.** State which version of the framework you mapped (e.g.
    "PCI DSS v4.0.1", "NIST CSF 2.0") — control numbers move between editions.
-7. **Write the rationale** in the `rationale` column *and* the fit assessment
-   here. The `rationale` is what an auditor reads in the export; make it a
-   complete thought, not a keyword.
+7. **Write the rationale** in the `rationale` column *and* copy it into the
+   reference table here verbatim — it is CI-checked. The `rationale` is what an
+   auditor reads in the export; make it a complete thought that claims no more
+   than the signal proves.
 
 ### What the code needs
 
@@ -570,7 +620,7 @@ a row here with no SQL, is a bug.
 This is enforced. [`scripts/check-mappings.mjs`](../scripts/check-mappings.mjs)
 applies every migration to an in-memory SQLite database, reads back
 `control_mappings`, and diffs the `(resource, status, framework, control_id,
-posture)` tuples against the rows parsed out of the
+posture, rationale)` tuples against the rows parsed out of the
 [reference table](#complete-mapping-reference) above. It fails with a row-level
 diff if the two drift. Run it with:
 
