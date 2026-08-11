@@ -15,7 +15,7 @@ import {
 } from "./auth";
 import { parseCookies, setCookieHeader, clearCookieHeader } from "./cookies";
 import { createAppJwt, getInstallationToken } from "./github-app";
-import { listInstallationRepos, pollRepoProtection, pollOrgAccess } from "./poller";
+import { listInstallationRepos, pollRepoProtection, pollRepoAlerts, pollOrgAccess } from "./poller";
 import { buildEvidenceRows, renderCsv, renderPdf, type Framework, type ExportFormat } from "./exporter";
 import {
   renderDashboard,
@@ -211,13 +211,16 @@ async function pollInstallation(env: Env, installationId: number, summary: PollS
     // Per-repo isolation: one failing repo must not abort the rest of the
     // installation's poll.
     try {
-      const facts = await pollRepoProtection(installationToken, repo);
+      const facts = [
+        ...(await pollRepoProtection(installationToken, repo)),
+        ...(await pollRepoAlerts(installationToken, repo)),
+      ];
       for (const fact of facts) {
         await env.DB.prepare(
-          `INSERT INTO snapshots (installation_id, repo, resource, status, raw_payload, captured_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+          `INSERT INTO snapshots (installation_id, repo, resource, status, raw_payload, captured_at, subject)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
         )
-          .bind(installationId, fact.repo, fact.resource, fact.status, fact.rawPayload, capturedAt)
+          .bind(installationId, fact.repo, fact.resource, fact.status, fact.rawPayload, capturedAt, fact.subject)
           .run();
         summary.written.push({ installationId, repo: fact.repo, resource: fact.resource, status: fact.status });
       }
@@ -828,10 +831,10 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const repo = extractRepoFullName(payload);
 
   await env.DB.prepare(
-    `INSERT INTO snapshots (installation_id, repo, resource, status, raw_payload, captured_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+    `INSERT INTO snapshots (installation_id, repo, resource, status, raw_payload, captured_at, subject)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
   )
-    .bind(installationId, repo, fact.resource, fact.status, bodyText, capturedAt)
+    .bind(installationId, repo, fact.resource, fact.status, bodyText, capturedAt, fact.subject)
     .run();
 
   return new Response("OK", { status: 200 });
