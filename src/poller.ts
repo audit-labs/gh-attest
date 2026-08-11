@@ -68,31 +68,42 @@ async function fetchBranchProtection(
   return { status: "enabled", raw: await res.json() };
 }
 
-async function fetchRulesets(installationToken: string, owner: string, repo: string): Promise<ProtectionCheck> {
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/rulesets?per_page=100`, {
-    headers: authHeaders(installationToken),
-  });
-  if (res.status === 403) return { status: "unavailable", raw: null };
-  if (!res.ok) throw new Error(`Failed to fetch rulesets for ${owner}/${repo} (${res.status})`);
+async function fetchDefaultBranchRules(
+  installationToken: string,
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<ProtectionCheck> {
+  // /rules/branches/{branch} aggregates the rules from every ACTIVE ruleset —
+  // repo- and org-level — that applies to this branch. Evaluate-mode
+  // (monitor-only) rulesets are excluded, and a ruleset targeting only other
+  // branches contributes nothing, so a non-empty result means the default
+  // branch is actually covered by at least one enforcing ruleset.
+  const res = await fetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/rules/branches/${encodeURIComponent(branch)}?per_page=100`,
+    { headers: authHeaders(installationToken) },
+  );
+  // 403 = feature not available; 404 = branch not found (e.g. empty repo).
+  // Both deliberately unmapped, like branch protection's "unavailable".
+  if (res.status === 403 || res.status === 404) return { status: "unavailable", raw: null };
+  if (!res.ok) throw new Error(`Failed to fetch branch rules for ${owner}/${repo} (${res.status})`);
 
-  const rulesets = (await res.json()) as Array<{ enforcement: string; target: string }>;
-  // "evaluate" is dry-run/monitor-only — doesn't actually block anything, so
-  // it doesn't count as protection being enabled.
-  const enabled = rulesets.some((r) => r.enforcement === "active" && r.target === "branch");
-  return { status: enabled ? "enabled" : "disabled", raw: rulesets };
+  const rules = (await res.json()) as unknown[];
+  return { status: rules.length > 0 ? "enabled" : "disabled", raw: rules };
 }
 
 export interface PolledFact {
   repo: string;
-  resource: "branch_protection" | "repository_ruleset";
-  status: "enabled" | "disabled" | "unavailable";
+  resource: string;
+  status: string;
+  subject: string | null;
   rawPayload: string | null;
 }
 
 export async function pollRepoProtection(installationToken: string, repo: RepoRef): Promise<PolledFact[]> {
   const [branchProtection, rulesets] = await Promise.all([
     fetchBranchProtection(installationToken, repo.owner, repo.name, repo.defaultBranch),
-    fetchRulesets(installationToken, repo.owner, repo.name),
+    fetchDefaultBranchRules(installationToken, repo.owner, repo.name, repo.defaultBranch),
   ]);
 
   return [
@@ -100,15 +111,88 @@ export async function pollRepoProtection(installationToken: string, repo: RepoRe
       repo: repo.fullName,
       resource: "branch_protection",
       status: branchProtection.status,
+      subject: null,
       rawPayload: branchProtection.raw ? JSON.stringify(branchProtection.raw) : null,
     },
     {
       repo: repo.fullName,
       resource: "repository_ruleset",
       status: rulesets.status,
+      subject: null,
       rawPayload: rulesets.raw ? JSON.stringify(rulesets.raw) : null,
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Alert streams: baseline + keep-alive poll.
+// ---------------------------------------------------------------------------
+
+// The list endpoint doubles as the tooling-enabled signal: 200 means the
+// feature is on regardless of whether it has ever produced an alert, 404
+// means it is switched off, 403 means it is not available (plan / GHAS).
+// Only `enabled` is mapped in control_mappings — absence of the tooling is
+// recorded but never counted as evidence either way.
+const ALERT_FEATURES = [
+  { feature: "dependabot", alertResource: "dependabot_alert", path: "/dependabot/alerts" },
+  { feature: "code_scanning", alertResource: "code_scanning_alert", path: "/code-scanning/alerts" },
+  { feature: "secret_scanning", alertResource: "secret_scanning_alert", path: "/secret-scanning/alerts" },
+] as const;
+
+interface AlertsCheck {
+  feature: "enabled" | "disabled" | "unavailable";
+  alerts: Array<{ number: number; state: string }>;
+}
+
+// Both offset (code/secret scanning) and cursor (Dependabot) pagination
+// advertise the next page in the Link header.
+function nextPageUrl(linkHeader: string | null): string | null {
+  const match = linkHeader?.match(/<([^>]+)>;\s*rel="next"/);
+  return match?.[1] ?? null;
+}
+
+async function fetchOpenAlerts(
+  installationToken: string,
+  owner: string,
+  repo: string,
+  path: string,
+): Promise<AlertsCheck> {
+  const alerts: AlertsCheck["alerts"] = [];
+  let url: string | null = `${GITHUB_API}/repos/${owner}/${repo}${path}?state=open&per_page=100`;
+  while (url) {
+    const res: Response = await fetch(url, { headers: authHeaders(installationToken) });
+    if (res.status === 404) return { feature: "disabled", alerts: [] };
+    if (res.status === 403) return { feature: "unavailable", alerts: [] };
+    if (!res.ok) throw new Error(`Failed to list ${path} for ${owner}/${repo} (${res.status})`);
+
+    const page = (await res.json()) as Array<{ number: number; state: string }>;
+    for (const alert of page) alerts.push({ number: alert.number, state: alert.state });
+    url = nextPageUrl(res.headers.get("Link"));
+  }
+  return { feature: "enabled", alerts };
+}
+
+// Webhooks record alert transitions, but (a) alerts already open before the
+// App was installed never sent one, and (b) an open alert with no events for
+// the whole retention window would age out of evidence. Re-recording the open
+// set every poll fixes both. Subrequest cost is 3+ per repo, on top of the 2
+// for protection state.
+export async function pollRepoAlerts(installationToken: string, repo: RepoRef): Promise<PolledFact[]> {
+  const facts: PolledFact[] = [];
+  for (const { feature, alertResource, path } of ALERT_FEATURES) {
+    const check = await fetchOpenAlerts(installationToken, repo.owner, repo.name, path);
+    facts.push({ repo: repo.fullName, resource: feature, status: check.feature, subject: null, rawPayload: null });
+    for (const alert of check.alerts) {
+      facts.push({
+        repo: repo.fullName,
+        resource: alertResource,
+        status: alert.state,
+        subject: String(alert.number),
+        rawPayload: null,
+      });
+    }
+  }
+  return facts;
 }
 
 // ---------------------------------------------------------------------------
