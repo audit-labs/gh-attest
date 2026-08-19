@@ -57,12 +57,40 @@ export async function buildEvidenceRows(
            l.resource NOT IN ('org_member', 'team_member')
            OR l.captured_at = (SELECT t FROM access_latest)
          )
-       ORDER BY cm.framework, cm.control_id, l.repo`,
+       -- l.resource last so the change-control collapse below sees
+       -- branch_protection before repository_ruleset deterministically.
+       ORDER BY cm.framework, cm.control_id, l.repo, l.resource`,
     )
     .bind(installationId, framework)
     .all<EvidenceRow>();
 
-  return results;
+  return collapseChangeControl(results);
+}
+
+// Classic branch protection and repository rulesets are two implementations of
+// the same control (CC8.1 / A.8.32), and a repo can have either, both, or
+// neither. Reported separately, a repo whose default branch is covered by an
+// active ruleset still emitted a `branch_protection` / `disabled` row and
+// counted as a change-control gap that isn't one. Collapse the pair to one row
+// per (framework, control, repo), keeping the mechanism actually in force:
+// enabled beats disabled, and classic protection wins an otherwise-equal tie
+// because its rationale describes the repo's state without naming a mechanism
+// the reader may not use.
+const CHANGE_CONTROL_RESOURCES = new Set(["branch_protection", "repository_ruleset"]);
+
+function collapseChangeControl(rows: EvidenceRow[]): EvidenceRow[] {
+  const groupKey = (row: EvidenceRow) => `${row.framework}|${row.control_id}|${row.repo}`;
+  const winners = new Map<string, EvidenceRow>();
+
+  for (const row of rows) {
+    if (!CHANGE_CONTROL_RESOURCES.has(row.resource)) continue;
+    const incumbent = winners.get(groupKey(row));
+    if (!incumbent || (row.posture === "positive" && incumbent.posture !== "positive")) {
+      winners.set(groupKey(row), row);
+    }
+  }
+
+  return rows.filter((row) => !CHANGE_CONTROL_RESOURCES.has(row.resource) || winners.get(groupKey(row)) === row);
 }
 
 const CSV_COLUMNS: Array<keyof EvidenceRow> = [
