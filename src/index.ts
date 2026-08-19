@@ -20,6 +20,7 @@ import { buildEvidenceRows, renderCsv, renderPdf, type Framework, type ExportFor
 import {
   renderDashboard,
   renderAccessReview,
+  normalizePosture,
   type ExportListRow,
   type InstallationOption,
 } from "./dashboard";
@@ -483,6 +484,7 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
 
   const url = new URL(request.url);
   const framework = normalizeFramework(url.searchParams.get("framework") ?? undefined) ?? "all";
+  const posture = normalizePosture(url.searchParams.get("posture"));
 
   const [rows, orgRow, exportsResult, lastPollRow, installations] = await Promise.all([
     buildEvidenceRows(env.DB, session.installationId, framework),
@@ -510,6 +512,7 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
     orgLogin: orgRow?.org_login ?? "unknown",
     installations,
     framework,
+    posture,
     rows,
     exports: exportsResult.results,
     lastPolledAt: lastPollRow?.t ?? null,
