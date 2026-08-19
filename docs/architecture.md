@@ -227,13 +227,19 @@ flowchart TB
   L --> J{{"JOIN control_mappings<br/>on resource + status"}}
   CM[("control_mappings")] --> J
   J --> F["filter by framework<br/>(soc2 | iso27001 | all)"]
-  F --> E["evidence rows<br/>control · posture · rationale"]
+  F --> C["collapse branch_protection<br/>+ repository_ruleset to one row"]
+  C --> E["evidence rows<br/>control · posture · rationale"]
   E --> CSV["renderCsv"]
   E --> PDF["renderPdf"]
 ```
 
 Unmapped `(resource, status)` pairs (e.g. `unavailable`, raw `push`) simply
 produce no rows — no evidence in either direction.
+
+Classic branch protection and repository rulesets both attest the same control,
+so the two are collapsed to one row per (framework, control, repo) — enabled
+wins over disabled — rather than letting an unused mechanism report a gap the
+other one covers.
 
 ## Boundaries & isolation
 
