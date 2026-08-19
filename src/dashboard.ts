@@ -36,12 +36,22 @@ function installationSwitcher(
     </form>`;
 }
 
+export const POSTURES = ["negative", "positive", "informational"] as const;
+export type Posture = (typeof POSTURES)[number];
+
+export function normalizePosture(value: string | null): Posture | null {
+  return POSTURES.includes(value as Posture) ? (value as Posture) : null;
+}
+
 export interface DashboardData {
   login: string;
   installationId: number;
   orgLogin: string;
   installations: InstallationOption[];
   framework: Framework;
+  // Null = show every posture; otherwise the table is narrowed to the one
+  // whose card the user clicked.
+  posture: Posture | null;
   rows: EvidenceRow[];
   exports: ExportListRow[];
   lastPolledAt: string | null;
@@ -75,6 +85,10 @@ const STYLE = `
   main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
   .cards { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
   .card { flex: 1 1 120px; background: #fff; border: 1px solid #e2e5e9; border-radius: 8px; padding: 0.9rem 1rem; }
+  a.card { display: block; color: inherit; text-decoration: none; }
+  a.card:hover { border-color: #0055dc; }
+  a.card.active { border-color: #0055dc; box-shadow: inset 0 0 0 1px #0055dc; }
+  a.card.active .l::after { content: " ✕"; }
   .card .n { font-size: 1.6rem; font-weight: 600; }
   .card .l { color: #666; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
   .n.positive { color: #1a8039; } .n.negative { color: #b32626; } .n.informational { color: #666; }
@@ -104,10 +118,25 @@ export function renderDashboard(data: DashboardData): string {
     if (r.repo) repos.add(r.repo);
   }
 
-  const frameworkTab = (value: Framework, label: string) =>
-    `<a href="/?framework=${value}" class="${data.framework === value ? "active" : ""}">${label}</a>`;
+  // Cards count the whole framework view, so the numbers stay stable while a
+  // posture filter is applied — otherwise clicking "Gaps" would zero the other
+  // two cards and there would be nothing left to click.
+  const href = (framework: Framework, posture: Posture | null) =>
+    `/?framework=${framework}${posture ? `&posture=${posture}` : ""}`;
 
-  const evidenceRows = data.rows
+  const frameworkTab = (value: Framework, label: string) =>
+    `<a href="${href(value, data.posture)}" class="${data.framework === value ? "active" : ""}">${label}</a>`;
+
+  // Clicking the active card clears the filter rather than reapplying it.
+  const postureCard = (posture: Posture, label: string) => {
+    const active = data.posture === posture;
+    return `<a class="card${active ? " active" : ""}" href="${href(data.framework, active ? null : posture)}"
+      aria-pressed="${active}"><div class="n ${posture}">${counts[posture]}</div><div class="l">${label}</div></a>`;
+  };
+
+  const visibleRows = data.posture ? data.rows.filter((r) => r.posture === data.posture) : data.rows;
+
+  const evidenceRows = visibleRows
     .map(
       (r) => `<tr>
         <td>${esc(r.framework)}</td>
@@ -152,9 +181,9 @@ export function renderDashboard(data: DashboardData): string {
   </header>
   <main>
     <div class="cards">
-      <div class="card"><div class="n negative">${counts.negative}</div><div class="l">Gaps</div></div>
-      <div class="card"><div class="n positive">${counts.positive}</div><div class="l">Satisfied</div></div>
-      <div class="card"><div class="n informational">${counts.informational}</div><div class="l">Informational</div></div>
+      ${postureCard("negative", "Gaps")}
+      ${postureCard("positive", "Satisfied")}
+      ${postureCard("informational", "Informational")}
       <div class="card"><div class="n">${repos.size}</div><div class="l">Repositories</div></div>
     </div>
 
@@ -183,7 +212,12 @@ export function renderDashboard(data: DashboardData): string {
 
     <table>
       <thead><tr><th>Framework</th><th>Control</th><th>Posture</th><th>Repo / Subject</th><th>Resource</th><th>Status</th></tr></thead>
-      <tbody>${evidenceRows || `<tr><td colspan="6" class="muted">No evidence yet.</td></tr>`}</tbody>
+      <tbody>${
+        evidenceRows ||
+        `<tr><td colspan="6" class="muted">${
+          data.posture ? `No ${esc(data.posture)} evidence in this view.` : "No evidence yet."
+        }</td></tr>`
+      }</tbody>
     </table>
 
     <h2 class="section-title">Recent exports</h2>
