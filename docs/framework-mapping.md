@@ -151,6 +151,13 @@ the next poll settles the state. See [`extractFact`](../src/webhook.ts).
 change control in a Git workflow. Enabled → **positive**; disabled →
 **negative** ("direct pushes possible" is a concrete change-control gap).
 
+**One row per repo, not two.** The two are alternative implementations of the
+same control, so the evidence query collapses them to a single row per
+(framework, control, repo), keeping whichever mechanism is actually in force —
+a repo covered by an active ruleset is not a change-control gap merely because
+classic protection is off. Both snapshots are still recorded; the collapse
+happens at query time in [`collapseChangeControl`](../src/exporter.ts).
+
 **Fit assessment: strong, with the scope stated in the evidence itself.** Both
 frameworks name "change management" explicitly, and branch protection is the
 canonical GitHub-native implementation of it. What the evidence attests is that
