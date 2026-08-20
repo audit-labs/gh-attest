@@ -55,6 +55,10 @@ export interface DashboardData {
   rows: EvidenceRow[];
   exports: ExportListRow[];
   lastPolledAt: string | null;
+  excludedRepos: string[];
+  // Repos seen in this installation's snapshots that aren't excluded yet —
+  // the options the exclusion form offers.
+  excludableRepos: string[];
 }
 
 // Deliberately narrower than `unknown`: an object reaching here would render
@@ -164,6 +168,26 @@ export function renderDashboard(data: DashboardData): string {
     })
     .join("");
 
+  const excludeForm = data.excludableRepos.length
+    ? `<div class="bar"><form method="post" action="/exclusions">
+        <select name="repo">${data.excludableRepos.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join("")}</select>
+        <button type="submit">Exclude</button>
+      </form></div>`
+    : `<p class="muted">No repositories left to exclude.</p>`;
+
+  const exclusionRows = data.excludedRepos
+    .map(
+      (repo) => `<tr>
+        <td>${esc(repo)}</td>
+        <td><form method="post" action="/exclusions">
+          <input type="hidden" name="repo" value="${esc(repo)}">
+          <input type="hidden" name="action" value="remove">
+          <button class="secondary" type="submit">Include again</button>
+        </form></td>
+      </tr>`,
+    )
+    .join("");
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -218,6 +242,15 @@ export function renderDashboard(data: DashboardData): string {
           data.posture ? `No ${esc(data.posture)} evidence in this view.` : "No evidence yet."
         }</td></tr>`
       }</tbody>
+    </table>
+
+    <h2 class="section-title">Excluded repositories</h2>
+    <p class="muted">Excluded repositories are skipped by the sync and contribute no evidence.
+      Their existing history is kept, so including one again restores it.</p>
+    ${excludeForm}
+    <table>
+      <thead><tr><th>Repository</th><th></th></tr></thead>
+      <tbody>${exclusionRows || `<tr><td colspan="2" class="muted">No repositories excluded.</td></tr>`}</tbody>
     </table>
 
     <h2 class="section-title">Recent exports</h2>
