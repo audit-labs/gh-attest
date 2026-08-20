@@ -57,6 +57,12 @@ export async function buildEvidenceRows(
            l.resource NOT IN ('org_member', 'team_member')
            OR l.captured_at = (SELECT t FROM access_latest)
          )
+         -- Excluded repos stay in snapshots (the exclusion is a reporting
+         -- decision, reversible) but contribute no evidence.
+         AND (
+           l.repo IS NULL
+           OR l.repo NOT IN (SELECT repo FROM repo_exclusions WHERE installation_id = ?1)
+         )
        -- l.resource last so the change-control collapse below sees
        -- branch_protection before repository_ruleset deterministically.
        ORDER BY cm.framework, cm.control_id, l.repo, l.resource`,

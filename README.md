@@ -47,13 +47,17 @@ under Cloudflare's `eu` jurisdiction.
 | --- | --- | --- |
 | `GET /` | session | Dashboard: current posture, exports |
 | `GET /access-review` | session | Membership changes since a date |
-| `POST /exports`, `/resync`, `/switch` | session | Dashboard actions |
+| `POST /exports`, `/resync`, `/switch`, `/exclusions` | session | Dashboard actions |
 | `GET /exports/:id[/download]` | session | Export status / file |
 | `POST /webhooks/github` | HMAC | App events |
 | `POST /webhooks/marketplace` | HMAC | Marketplace events |
 | `POST /admin/{poll,export,cleanup,purge}` | bearer | Operations |
 
 Session routes are scoped by installation; admin routes require `ADMIN_TOKEN`.
+
+Repositories can be excluded from the dashboard: an excluded repo is skipped by
+the poll and contributes no evidence, while its existing history is retained so
+the exclusion can be undone.
 
 ## Development
 

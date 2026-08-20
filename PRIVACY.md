@@ -19,7 +19,9 @@ The App processes data only for organizations that have installed it,
 and only within the scope of the permissions granted at installation.
 
 **Organization & installation metadata.** Installation ID, organization
-login, and installation/suspension timestamps.
+login, and installation/suspension timestamps. If you exclude repositories
+from scanning, the App stores the excluded repository names for your
+installation.
 
 **Security & access-control signals (the evidence).** As your
 configuration changes and on a periodic re-sync, the App records
@@ -116,6 +118,8 @@ is uninstalled. You may also request deletion at any time.
 
 - **Uninstall** the App at any time from your organization's GitHub
   settings to stop all processing and trigger deletion of your data.
+- **Exclude repositories** from scanning and reporting from the
+  dashboard, so the App stops collecting new evidence about them.
 - **Export** your organization's data as CSV or PDF from the dashboard
   at any time.
 - **Request deletion** of your organization's data by contacting us.
