@@ -89,6 +89,9 @@ export default {
     if (request.method === "POST" && url.pathname === "/switch") {
       return handleSwitchInstallation(request, env);
     }
+    if (request.method === "POST" && url.pathname === "/exclusions") {
+      return handleExclusion(request, env);
+    }
     const exportMatch = url.pathname.match(/^\/exports\/([0-9a-f-]+)(\/download)?$/);
     if (request.method === "GET" && exportMatch) {
       const [, jobId, downloadSuffix] = exportMatch;
@@ -205,7 +208,8 @@ async function pollAllInstallations(env: Env): Promise<PollSummary> {
 async function pollInstallation(env: Env, installationId: number, summary: PollSummary): Promise<void> {
   const appJwt = await createAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
   const installationToken = await getInstallationToken(appJwt, installationId);
-  const repos = await listInstallationRepos(installationToken);
+  const excluded = await excludedRepos(env, installationId);
+  const repos = (await listInstallationRepos(installationToken)).filter((r) => !excluded.has(r.fullName));
   const capturedAt = new Date().toISOString();
 
   for (const repo of repos) {
@@ -375,6 +379,7 @@ async function purgeInstallation(env: Env, installationId: number): Promise<void
   await env.DB.batch([
     env.DB.prepare("DELETE FROM snapshots WHERE installation_id = ?1").bind(installationId),
     env.DB.prepare("DELETE FROM exports WHERE installation_id = ?1").bind(installationId),
+    env.DB.prepare("DELETE FROM repo_exclusions WHERE installation_id = ?1").bind(installationId),
     env.DB.prepare("DELETE FROM installations WHERE installation_id = ?1").bind(installationId),
   ]);
 }
@@ -486,7 +491,7 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
   const framework = normalizeFramework(url.searchParams.get("framework") ?? undefined) ?? "all";
   const posture = normalizePosture(url.searchParams.get("posture"));
 
-  const [rows, orgRow, exportsResult, lastPollRow, installations] = await Promise.all([
+  const [rows, orgRow, exportsResult, lastPollRow, installations, excluded, knownRepos] = await Promise.all([
     buildEvidenceRows(env.DB, session.installationId, framework),
     env.DB.prepare("SELECT org_login FROM installations WHERE installation_id = ?1")
       .bind(session.installationId)
@@ -504,6 +509,13 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
       .bind(session.installationId)
       .first<{ t: string | null }>(),
     accessibleInstallations(env, session),
+    excludedRepos(env, session.installationId),
+    env.DB.prepare(
+      `SELECT DISTINCT repo FROM snapshots
+       WHERE installation_id = ?1 AND repo IS NOT NULL ORDER BY repo`,
+    )
+      .bind(session.installationId)
+      .all<{ repo: string }>(),
   ]);
 
   const html = renderDashboard({
@@ -516,6 +528,8 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
     rows,
     exports: exportsResult.results,
     lastPolledAt: lastPollRow?.t ?? null,
+    excludedRepos: [...excluded].sort((a, b) => a.localeCompare(b)),
+    excludableRepos: knownRepos.results.map((r) => r.repo).filter((repo) => !excluded.has(repo)),
   });
 
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
@@ -534,6 +548,42 @@ async function accessibleInstallations(env: Env, session: SessionPayload): Promi
     .bind(...ids)
     .all<InstallationOption>();
   return results;
+}
+
+// Repos this installation has opted out of. Read by both the dashboard and
+// the poller, so they agree on what is out of scope.
+async function excludedRepos(env: Env, installationId: number): Promise<Set<string>> {
+  const { results } = await env.DB.prepare("SELECT repo FROM repo_exclusions WHERE installation_id = ?1")
+    .bind(installationId)
+    .all<{ repo: string }>();
+  return new Set(results.map((r) => r.repo));
+}
+
+// POST /exclusions — add or remove a repo exclusion for the session's own
+// installation. Snapshots already collected are kept: an exclusion hides a
+// repo from evidence and skips it on the next poll, and can be undone.
+async function handleExclusion(request: Request, env: Env): Promise<Response> {
+  const session = await requireSession(request, env);
+  if (!session) return new Response("Unauthorized", { status: 401 });
+
+  const form = await request.formData();
+  const repo = String(form.get("repo") ?? "").trim();
+  if (!repo) return new Response("repo is required", { status: 400 });
+
+  if (form.get("action") === "remove") {
+    await env.DB.prepare("DELETE FROM repo_exclusions WHERE installation_id = ?1 AND repo = ?2")
+      .bind(session.installationId, repo)
+      .run();
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO repo_exclusions (installation_id, repo, excluded_at) VALUES (?1, ?2, ?3)
+       ON CONFLICT(installation_id, repo) DO NOTHING`,
+    )
+      .bind(session.installationId, repo, new Date().toISOString())
+      .run();
+  }
+
+  return Response.redirect(new URL("/", request.url).toString(), 303);
 }
 
 // POST /switch — change which installation the session is viewing. The

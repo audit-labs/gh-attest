@@ -61,7 +61,7 @@ flowchart LR
 | `POST /webhooks/github`, `/webhooks/marketplace` | HMAC (`GITHUB_WEBHOOK_SECRET`) | Ingest App / marketplace events |
 | `GET /login`, `/callback`, `/logout` | OAuth state cookie | Dashboard sign-in |
 | `GET /`, `/access-review` | Session cookie | Posture dashboard, membership diff |
-| `POST /exports`, `/resync`, `/switch` | Session cookie | Dashboard actions (installation-scoped) |
+| `POST /exports`, `/resync`, `/switch`, `/exclusions` | Session cookie | Dashboard actions (installation-scoped) |
 | `GET /exports/:id[/download]` | Session cookie | Export status / file (scoped to installation) |
 | `POST /admin/{poll,export,cleanup,purge}`, `GET /admin/export/:id` | Bearer (`ADMIN_TOKEN`) | Operations |
 
@@ -119,7 +119,7 @@ sequenceDiagram
   Cron->>W: fire
   par Poll every active installation
     W->>GH: app JWT → installation token
-    W->>GH: repos · branch protection · rulesets · org/team members
+    W->>GH: repos (minus exclusions) · branch protection · rulesets · org/team members
     GH-->>W: current state
     W->>D1: INSERT snapshots (one captured_at per batch)
   and Retention cleanup
@@ -176,6 +176,7 @@ NULL` matches any status for that resource.
 erDiagram
   installations ||--o{ snapshots : has
   installations ||--o{ exports : has
+  installations ||--o{ repo_exclusions : has
   snapshots }o..o{ control_mappings : "query-time join on (resource, status)"
 
   installations {
@@ -202,6 +203,11 @@ erDiagram
     text    control_id "e.g. CC8.1 | A.8.32"
     text    posture "positive | negative | informational"
     text    rationale
+  }
+  repo_exclusions {
+    integer installation_id PK,FK
+    text    repo PK "full name, out of scope"
+    text    excluded_at
   }
   exports {
     text    id PK "uuid"
@@ -235,6 +241,10 @@ flowchart TB
 
 Unmapped `(resource, status)` pairs (e.g. `unavailable`, raw `push`) simply
 produce no rows — no evidence in either direction.
+
+Repos listed in `repo_exclusions` are filtered out of the result and skipped by
+the poll, so an excluded repo costs no subrequests and reports no gaps; its
+snapshots stay in the table, so removing the exclusion restores its history.
 
 Classic branch protection and repository rulesets both attest the same control,
 so the two are collapsed to one row per (framework, control, repo) — enabled
