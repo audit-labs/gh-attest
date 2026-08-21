@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: npm
+
+      - run: npm ci
+
+      # The engine is TypeScript on Workers types; a type error is a deploy
+      # that fails in Cloudflare's build rather than here.
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Applies every migration to an in-memory SQLite database and diffs the
+      # resulting control_mappings against docs/framework-mapping.md. The doc
+      # is what an auditor reads, so drift there is a lie in every export.
+      - name: Control mappings match the docs
+        run: npm run test:mappings
