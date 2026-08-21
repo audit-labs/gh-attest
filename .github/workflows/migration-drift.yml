@@ -25,7 +25,9 @@ jobs:
           node-version: '26'
           cache: npm
 
-      - run: npm ci
+      # --ignore-scripts: no dependency here needs a lifecycle hook, and CI
+      # should not run arbitrary postinstall code from the tree.
+      - run: npm ci --ignore-scripts
 
       - name: Every migration in migrations/ is applied to production
         env:
@@ -35,7 +37,7 @@ jobs:
             echo "::error::CLOUDFLARE_API_TOKEN is not set — this check cannot see production."
             exit 1
           fi
-          out=$(npx wrangler d1 migrations list DB --remote 2>&1) || true
+          out=$(./node_modules/.bin/wrangler d1 migrations list DB --remote 2>&1) || true
           echo "$out"
           if echo "$out" | grep -q "No migrations to apply"; then
             echo "Production schema matches migrations/."
