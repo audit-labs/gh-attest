@@ -21,6 +21,12 @@ jobs:
 
       - run: npm ci
 
+      # worker-configuration.d.ts is generated, not committed, and tsconfig
+      # lists it under "types" — so tsc cannot run on a fresh checkout without
+      # this. Needs no Cloudflare credentials; it reads wrangler.jsonc.
+      - name: Generate Workers types
+        run: npm run types
+
       # The engine is TypeScript on Workers types; a type error is a deploy
       # that fails in Cloudflare's build rather than here.
       - name: Typecheck
