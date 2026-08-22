@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test:mappings": "node scripts/check-mappings.mjs",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
-    "db:migrate:remote": "wrangler d1 migrations apply DB --remote"
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "check:migrations": "wrangler d1 migrations list DB --remote | grep -q 'No migrations to apply' || { echo 'Pending D1 migrations. Run: npm run db:migrate:remote' >&2; exit 1; }"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
