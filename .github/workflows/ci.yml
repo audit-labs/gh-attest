@@ -9,7 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  # Only the mapping check lives here. Cloudflare Workers Builds already runs
+  # `wrangler types && tsc --noEmit` as its build command, on every branch, so
+  # duplicating the typecheck bought a second copy of the same signal.
+  #
+  # What Workers Builds does not do is compare the control mappings against the
+  # docs — and that check needs no Cloudflare credentials, which is why it can
+  # live here and the migration guard cannot.
+  mappings:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -17,25 +24,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '26'
-          cache: npm
 
-      # --ignore-scripts: no dependency here needs a lifecycle hook, and CI
-      # should not run arbitrary postinstall code from the tree.
-      - run: npm ci --ignore-scripts
-
-      # worker-configuration.d.ts is generated, not committed, and tsconfig
-      # lists it under "types" — so tsc cannot run on a fresh checkout without
-      # this. Needs no Cloudflare credentials; it reads wrangler.jsonc.
-      - name: Generate Workers types
-        run: npm run types
-
-      # The engine is TypeScript on Workers types; a type error is a deploy
-      # that fails in Cloudflare's build rather than here.
-      - name: Typecheck
-        run: npm run typecheck
-
-      # Applies every migration to an in-memory SQLite database and diffs the
-      # resulting control_mappings against docs/framework-mapping.md. The doc
-      # is what an auditor reads, so drift there is a lie in every export.
+      # No install step: check-mappings.mjs has no dependencies. It applies the
+      # migrations to an in-memory SQLite database using Node's built-in module
+      # and diffs the resulting control_mappings against
+      # docs/framework-mapping.md, rationale text included.
       - name: Control mappings match the docs
-        run: npm run test:mappings
+        run: node scripts/check-mappings.mjs
