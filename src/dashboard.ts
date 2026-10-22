@@ -114,13 +114,62 @@ const STYLE = `
   code { background: #eef0f3; padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.85em; }
 `;
 
-export function renderDashboard(data: DashboardData): string {
+function postureCounts(rows: EvidenceRow[]) {
   const counts = { positive: 0, negative: 0, informational: 0 };
   const repos = new Set<string>();
-  for (const r of data.rows) {
+  for (const r of rows) {
     counts[r.posture as keyof typeof counts] = (counts[r.posture as keyof typeof counts] ?? 0) + 1;
     if (r.repo) repos.add(r.repo);
   }
+  return { counts, repos };
+}
+
+function evidenceRowHtml(r: EvidenceRow): string {
+  return `<tr>
+        <td>${esc(r.framework)}</td>
+        <td>${esc(r.control_id)}</td>
+        <td class="posture ${esc(r.posture)}">${esc(r.posture)}</td>
+        <td>${esc(r.repo ?? r.subject ?? "—")}</td>
+        <td>${esc(r.resource)}</td>
+        <td>${esc(r.status)}</td>
+      </tr>`;
+}
+
+function exportRowHtml(e: ExportListRow): string {
+  const done = e.status === "done";
+  const cell = done
+    ? `<a href="/exports/${esc(e.id)}/download">Download ${esc(e.format.toUpperCase())}</a>`
+    : `<span class="muted" data-export-id="${esc(e.id)}">${esc(e.status)}…</span>`;
+  return `<tr>
+        <td>${esc(e.created_at)}</td>
+        <td>${esc(e.framework)}</td>
+        <td>${esc(e.format.toUpperCase())}</td>
+        <td class="export-status">${cell}</td>
+      </tr>`;
+}
+
+function excludeFormHtml(excludableRepos: string[]): string {
+  return excludableRepos.length
+    ? `<div class="bar"><form method="post" action="/exclusions">
+        <select name="repo">${excludableRepos.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join("")}</select>
+        <button type="submit">Exclude</button>
+      </form></div>`
+    : `<p class="muted">No repositories left to exclude.</p>`;
+}
+
+function exclusionRowHtml(repo: string): string {
+  return `<tr>
+        <td>${esc(repo)}</td>
+        <td><form method="post" action="/exclusions">
+          <input type="hidden" name="repo" value="${esc(repo)}">
+          <input type="hidden" name="action" value="remove">
+          <button class="secondary" type="submit">Include again</button>
+        </form></td>
+      </tr>`;
+}
+
+export function renderDashboard(data: DashboardData): string {
+  const { counts, repos } = postureCounts(data.rows);
 
   // Cards count the whole framework view, so the numbers stay stable while a
   // posture filter is applied — otherwise clicking "Gaps" would zero the other
@@ -140,53 +189,10 @@ export function renderDashboard(data: DashboardData): string {
 
   const visibleRows = data.posture ? data.rows.filter((r) => r.posture === data.posture) : data.rows;
 
-  const evidenceRows = visibleRows
-    .map(
-      (r) => `<tr>
-        <td>${esc(r.framework)}</td>
-        <td>${esc(r.control_id)}</td>
-        <td class="posture ${esc(r.posture)}">${esc(r.posture)}</td>
-        <td>${esc(r.repo ?? r.subject ?? "—")}</td>
-        <td>${esc(r.resource)}</td>
-        <td>${esc(r.status)}</td>
-      </tr>`,
-    )
-    .join("");
-
-  const exportRows = data.exports
-    .map((e) => {
-      const done = e.status === "done";
-      const cell = done
-        ? `<a href="/exports/${esc(e.id)}/download">Download ${esc(e.format.toUpperCase())}</a>`
-        : `<span class="muted" data-export-id="${esc(e.id)}">${esc(e.status)}…</span>`;
-      return `<tr>
-        <td>${esc(e.created_at)}</td>
-        <td>${esc(e.framework)}</td>
-        <td>${esc(e.format.toUpperCase())}</td>
-        <td class="export-status">${cell}</td>
-      </tr>`;
-    })
-    .join("");
-
-  const excludeForm = data.excludableRepos.length
-    ? `<div class="bar"><form method="post" action="/exclusions">
-        <select name="repo">${data.excludableRepos.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join("")}</select>
-        <button type="submit">Exclude</button>
-      </form></div>`
-    : `<p class="muted">No repositories left to exclude.</p>`;
-
-  const exclusionRows = data.excludedRepos
-    .map(
-      (repo) => `<tr>
-        <td>${esc(repo)}</td>
-        <td><form method="post" action="/exclusions">
-          <input type="hidden" name="repo" value="${esc(repo)}">
-          <input type="hidden" name="action" value="remove">
-          <button class="secondary" type="submit">Include again</button>
-        </form></td>
-      </tr>`,
-    )
-    .join("");
+  const evidenceRows = visibleRows.map(evidenceRowHtml).join("");
+  const exportRows = data.exports.map(exportRowHtml).join("");
+  const excludeForm = excludeFormHtml(data.excludableRepos);
+  const exclusionRows = data.excludedRepos.map(exclusionRowHtml).join("");
 
   return `<!doctype html>
 <html lang="en">

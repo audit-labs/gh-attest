@@ -26,7 +26,7 @@ const NULL_STATUS = "·";
 // The rationale is part of the key: it is the auditor-facing string in every
 // export, so the doc's copy drifting from the SQL is as much a lie as a
 // wrong posture.
-const key = (resource, status, framework, control, posture, rationale) =>
+const key = ({ resource, status, framework, control, posture, rationale }) =>
   `${resource}|${status ?? NULL_STATUS}|${framework}|${control}|${posture}|${rationale}`;
 
 // --- 1. Source of truth: apply migrations, read control_mappings. ---
@@ -42,7 +42,7 @@ function rowsFromMigrations() {
     .prepare("SELECT resource, status, framework, control_id, posture, rationale FROM control_mappings")
     .all();
   db.close();
-  return new Set(rows.map((r) => key(r.resource, r.status, r.framework, r.control_id, r.posture, r.rationale)));
+  return new Set(rows.map((r) => key({ ...r, control: r.control_id })));
 }
 
 // --- 2. Human-readable copy: parse the doc's reference table. ---
@@ -66,7 +66,7 @@ function rowsFromDoc() {
     const framework = FRAMEWORK_LABELS[frameworkLabel];
     if (!framework || !POSTURES.has(posture) || !BACKTICKED.test(resource ?? "")) continue;
     const status = statusCell.replaceAll("`", ""); // "·" for NULL
-    set.add(key(resource.replaceAll("`", ""), status, framework, control, posture, rationale ?? ""));
+    set.add(key({ resource: resource.replaceAll("`", ""), status, framework, control, posture, rationale: rationale ?? "" }));
   }
   return set;
 }

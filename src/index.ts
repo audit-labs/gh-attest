@@ -43,65 +43,47 @@ const CONTENT_TYPE: Record<ExportFormat, string> = {
 const SNAPSHOT_RETENTION_DAYS = 396; // ~13 months: an annual audit period + buffer
 const EXPORT_RETENTION_DAYS = 90;
 
+type Route = (request: Request, env: Env) => Promise<Response> | Response;
+
+const ROUTES = new Map<string, Route>([
+  ["POST /webhooks/github", handleWebhook],
+  ["POST /webhooks/marketplace", handleMarketplaceWebhook],
+  ["GET /login", handleLogin],
+  ["GET /callback", handleCallback],
+  ["GET /logout", () => handleLogout()],
+  ["POST /admin/poll", handleAdminPoll],
+  ["POST /admin/export", handleAdminExport],
+  ["POST /admin/cleanup", handleAdminCleanup],
+  ["POST /admin/purge", handleAdminPurge],
+  // Dashboard (session-authed) surfaces.
+  ["POST /resync", handleResync],
+  ["POST /exports", handleCreateExport],
+  ["POST /switch", handleSwitchInstallation],
+  ["POST /exclusions", handleExclusion],
+  ["GET /access-review", handleAccessReview],
+  ["GET /", handleDashboard],
+]);
+
+// GET /admin/export/<id>[/download] (admin token) and /exports/<id>[/download]
+// (session).
+const EXPORT_JOB_ROUTES = [
+  { pattern: /^\/admin\/export\/([0-9a-f-]+)(\/download)?$/, handler: handleAdminExportGet },
+  { pattern: /^\/exports\/([0-9a-f-]+)(\/download)?$/, handler: handleSessionExportGet },
+];
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (request.method === "POST" && url.pathname === "/webhooks/github") {
-      return handleWebhook(request, env);
-    }
-    if (request.method === "POST" && url.pathname === "/webhooks/marketplace") {
-      return handleMarketplaceWebhook(request, env);
-    }
-    if (request.method === "GET" && url.pathname === "/login") {
-      return handleLogin(request, env);
-    }
-    if (request.method === "GET" && url.pathname === "/callback") {
-      return handleCallback(request, env);
-    }
-    if (request.method === "GET" && url.pathname === "/logout") {
-      return handleLogout();
-    }
-    if (request.method === "POST" && url.pathname === "/admin/poll") {
-      return handleAdminPoll(request, env);
-    }
-    if (request.method === "POST" && url.pathname === "/admin/export") {
-      return handleAdminExport(request, env);
-    }
-    if (request.method === "POST" && url.pathname === "/admin/cleanup") {
-      return handleAdminCleanup(request, env);
-    }
-    if (request.method === "POST" && url.pathname === "/admin/purge") {
-      return handleAdminPurge(request, env);
-    }
-    const adminExportMatch = url.pathname.match(/^\/admin\/export\/([0-9a-f-]+)(\/download)?$/);
-    if (request.method === "GET" && adminExportMatch) {
-      const [, jobId, downloadSuffix] = adminExportMatch;
-      if (jobId) return handleAdminExportGet(request, env, jobId, downloadSuffix === "/download");
-    }
-    // Dashboard (session-authed) surfaces.
-    if (request.method === "POST" && url.pathname === "/resync") {
-      return handleResync(request, env);
-    }
-    if (request.method === "POST" && url.pathname === "/exports") {
-      return handleCreateExport(request, env);
-    }
-    if (request.method === "POST" && url.pathname === "/switch") {
-      return handleSwitchInstallation(request, env);
-    }
-    if (request.method === "POST" && url.pathname === "/exclusions") {
-      return handleExclusion(request, env);
-    }
-    const exportMatch = url.pathname.match(/^\/exports\/([0-9a-f-]+)(\/download)?$/);
-    if (request.method === "GET" && exportMatch) {
-      const [, jobId, downloadSuffix] = exportMatch;
-      if (jobId) return handleSessionExportGet(request, env, jobId, downloadSuffix === "/download");
-    }
-    if (request.method === "GET" && url.pathname === "/access-review") {
-      return handleAccessReview(request, env);
-    }
-    if (request.method === "GET" && url.pathname === "/") {
-      return handleDashboard(request, env);
+    const route = ROUTES.get(`${request.method} ${url.pathname}`);
+    if (route) return route(request, env);
+
+    if (request.method === "GET") {
+      for (const { pattern, handler } of EXPORT_JOB_ROUTES) {
+        const match = url.pathname.match(pattern);
+        const [, jobId, downloadSuffix] = match ?? [];
+        if (jobId) return handler(request, env, jobId, downloadSuffix === "/download");
+      }
     }
 
     return new Response("Not found", { status: 404 });
