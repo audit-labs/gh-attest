@@ -14,12 +14,12 @@
     "check:migrations": "wrangler d1 migrations list DB --remote | grep -q 'No migrations to apply' || { echo 'Pending D1 migrations. Run: npm run db:migrate:remote' >&2; exit 1; }"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
-    "wrangler": "^4.124.0"
+    "wrangler": "^4.156.0"
   },
   "dependencies": {
-    "jose": "^6.2.9",
+    "jose": "^6.2.14",
     "pdf-lib": "^1.17.1"
   }
 }
