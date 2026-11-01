@@ -102,7 +102,7 @@ export default {
         message.ack();
       } catch (err) {
         const job = message.body;
-        console.error(`Export ${job.jobId} failed:`, err);
+        console.error("Export %s failed:", job.jobId, err);
         try {
           await env.DB.prepare(
             "UPDATE exports SET status = 'error', error = ?1, completed_at = ?2 WHERE id = ?3",
@@ -112,7 +112,7 @@ export default {
         } catch (recordErr) {
           // Recording the failure must not stop the ack below, or a
           // deterministic render error would be retried to the DLQ limit.
-          console.error(`Could not record export failure for ${job.jobId}:`, recordErr);
+          console.error("Could not record export failure for %s:", job.jobId, recordErr);
         }
         // Rendering failure is deterministic (bad data / bug), not transient —
         // don't retry, the error is recorded for the operator.
@@ -665,7 +665,7 @@ async function handleResync(request: Request, env: Env): Promise<Response> {
   try {
     await pollInstallation(env, session.installationId, summary);
   } catch (err) {
-    console.error(`Resync failed for installation ${session.installationId}:`, err);
+    console.error("Resync failed for installation %s:", session.installationId, err);
   }
   return Response.redirect(new URL("/", request.url).toString(), 303);
 }
