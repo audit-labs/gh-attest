@@ -1,9 +1,5 @@
 # gh-attest
 
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=audit-labs_gh-attest&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=audit-labs_gh-attest)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=audit-labs_gh-attest&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=audit-labs_gh-attest)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=audit-labs_gh-attest&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=audit-labs_gh-attest)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=audit-labs_gh-attest&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=audit-labs_gh-attest)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 Turns GitHub security settings into auditor-ready evidence. A self-hosted
