@@ -9,14 +9,15 @@
     "head_sampling_rate": 1
   },
 
-  // Storage is pinned to the EU jurisdiction so customer data stays in the
-  // EEA. Jurisdiction is immutable: moving it means recreating these
-  // resources and migrating the data.
+  // Storage is pinned to the EU jurisdiction so evidence stays in the EEA.
+  // Jurisdiction is immutable: moving it means recreating these resources
+  // and migrating the data. Create them as in the README's Deployment section.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "gh-attest-db-eu",
-      "database_id": "70e8b4b2-4409-4f51-a9f6-badce76f5891",
+      // From `wrangler d1 create gh-attest-db-eu --jurisdiction eu`.
+      "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "./migrations"
     }
   ],

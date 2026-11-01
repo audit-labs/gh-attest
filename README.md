@@ -6,10 +6,13 @@
 [![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=audit-labs_gh-attest&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=audit-labs_gh-attest)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-Turns GitHub security settings into auditor-ready evidence. A GitHub App that
-records branch protection, scanning alerts, and organization access as they
-change, maps them to SOC 2 and ISO 27001 controls, and exports point-in-time
-CSV and PDF evidence packages.
+Turns GitHub security settings into auditor-ready evidence. A self-hosted
+GitHub App that records branch protection, scanning alerts, and organization
+access as they change, maps them to SOC 2 and ISO 27001 controls, and exports
+point-in-time CSV and PDF evidence packages.
+
+You register your own GitHub App and deploy the Worker to your own Cloudflare
+account. Audit Labs does not run a hosted instance.
 
 Read-only — it never modifies your repositories, permissions, or membership.
 
@@ -38,10 +41,17 @@ webhooks never announce (protection and open alerts that predate the install,
 whether each scanner is enabled, and current membership). Each observation is stored as a timestamped snapshot in D1.
 Exports render off the request path via a queue, into R2.
 
-**Stack:** Cloudflare Workers · D1 · R2 · Queues. All storage is provisioned
-under Cloudflare's `eu` jurisdiction.
+**Stack:** Cloudflare Workers · D1 · R2 · Queues. The deployment steps below
+create all storage under Cloudflare's `eu` jurisdiction.
+
+Installations are recorded only from the App's webhooks; the hourly poll covers
+installations already recorded and does not discover new ones. If the webhook
+URL or secret is wrong, every delivery is refused with a 401 and the
+installation never appears.
 
 ## Endpoints
+
+Routes served by a deployed Worker:
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
@@ -73,10 +83,34 @@ Type checking: `npm run typecheck`. Generate binding types after editing
 
 ## Deployment
 
+Create the storage. Jurisdiction is fixed at creation:
+
+```sh
+npx wrangler d1 create gh-attest-db-eu --jurisdiction eu
+npx wrangler r2 bucket create gh-attest-exports-eu --jurisdiction eu
+npx wrangler queues create generate-export
+```
+
+Put the `database_id` printed by `d1 create` into `wrangler.jsonc`, then:
+
 ```sh
 npm run db:migrate:remote
 npm run deploy
 ```
+
+Register a GitHub App with:
+
+| Setting | Value |
+| --- | --- |
+| Webhook URL | `https://<worker>/webhooks/github` |
+| Webhook secret | same value as `GITHUB_WEBHOOK_SECRET` |
+| Callback URL | `https://<worker>/callback` |
+| Repository permissions (read-only) | Administration, Metadata, Dependabot alerts, Code scanning alerts, Secret scanning alerts |
+| Organization permissions (read-only) | Members |
+| Events | Branch protection rule, Repository ruleset, Dependabot alert, Code scanning alert, Secret scanning alert, Member, Organization, Team, Repository, Push |
+
+Install it on your organization, then confirm the `installation` delivery
+returned 200 under the App's Advanced → Recent Deliveries.
 
 Secrets are set with `wrangler secret put <NAME>` — never in `wrangler.jsonc`:
 
